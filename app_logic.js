@@ -57,10 +57,10 @@ function esc(s){
 
 /* ---------- state access helpers ---------- */
 function chData(channel){ return STATE[channel]; }
-function getWeek(channel, wk){ return chData(channel).weeks[wk] || { status: 'draft', qty: {}, memo: '' }; }
+function getWeek(channel, wk){ return chData(channel).weeks[wk] || { status: 'draft', qty: defaultWeekQty(channel, wk), memo: '' }; }
 function ensureWeek(channel, wk){
   const c = chData(channel);
-  if(!c.weeks[wk]) c.weeks[wk] = { status: 'draft', qty: {}, memo: '' };
+  if(!c.weeks[wk]) c.weeks[wk] = { status: 'draft', qty: defaultWeekQty(channel, wk), memo: '' };
   return c.weeks[wk];
 }
 function getMonth(channel, mk){ return chData(channel).months[mk] || { memo: '' }; }
@@ -70,7 +70,19 @@ function ensureMonth(channel, mk){
   return c.months[mk];
 }
 function weekKeysInMonth(channel, monthKey){
-  return Object.keys(chData(channel).weeks).filter(function(wk){ return monthKeyOf(parseIso(wk)) === monthKey; }).sort();
+  // すべての暦週（月曜始まり）を、そのMondayが属する月として列挙する
+  // （STATEにまだ何も入力されていない週も、前年実績ベースの既定値を月合計へ反映するため一覧に含める）
+  const parts = monthKey.split('-').map(Number);
+  const first = new Date(parts[0], parts[1] - 1, 1);
+  const last = new Date(parts[0], parts[1], 0);
+  const result = [];
+  let d = mondayOf(first);
+  if(d < first) d = addDays(d, 7);
+  while(d <= last){
+    result.push(isoDate(d));
+    d = addDays(d, 7);
+  }
+  return result;
 }
 function groupedRetailProducts(){
   const order = STATE.retail.groupOrder;
@@ -117,29 +129,44 @@ function renderWeekRefHtml(code, wk){
   return '<div class="week-ref">参考（同時期実績）: ' + parts.join('／') + '</div>';
 }
 function roundUpToTens(n){ return Math.ceil(n / 10) * 10; }
-function autoFillFromLastYear(channel){
-  const wk = NAV.weekStart;
-  const week = ensureWeek(channel, wk);
-  const products = channel === 'retail' ? MASTER.retailProducts : MASTER.wholesaleProducts;
-  const campaignBumpByCode = {};
-  if(channel === 'retail'){
-    weekCampaigns(wk).forEach(function(c){
-      campaignBumpByCode[c.code] = (campaignBumpByCode[c.code] || 0) + c.qty;
-    });
-  }
 
-  const targets = [];
-  products.forEach(function(p){
+/* ---------- 前年実績＋キャンペーンによる既定値（製造予定の初期値） ---------- */
+// 通販のみ対応（卸売はまだ実績データが無いため既定値なし＝従来どおり空欄）。
+// まだ何も入力されていない週は、この既定値がそのまま「製造予定数」として最初から表示される。
+// 1回のrender()内で何度も呼ばれるため、週ごとに結果をキャッシュする（render()の先頭でクリア）。
+let _defaultQtyCache = {};
+function defaultWeekEntries(channel, wk){
+  if(channel !== 'retail') return [];
+  const cacheKey = channel + '|' + wk;
+  if(_defaultQtyCache[cacheKey]) return _defaultQtyCache[cacheKey];
+  const campaignBumpByCode = {};
+  weekCampaigns(wk).forEach(function(c){
+    campaignBumpByCode[c.code] = (campaignBumpByCode[c.code] || 0) + c.qty;
+  });
+  const entries = [];
+  MASTER.retailProducts.forEach(function(p){
     const h = historyQty(p.code, wk, 1);
     const bump = campaignBumpByCode[p.code] || 0;
     if(h === null && !bump) return;
-    targets.push({ code: p.code, qty: roundUpToTens((h || 0) + bump), hasBump: bump > 0 });
+    entries.push({ code: p.code, qty: roundUpToTens((h || 0) + bump), hasBump: bump > 0 });
   });
+  _defaultQtyCache[cacheKey] = entries;
+  return entries;
+}
+function defaultWeekQty(channel, wk){
+  const qty = {};
+  defaultWeekEntries(channel, wk).forEach(function(e){ qty[e.code] = e.qty; });
+  return qty;
+}
+function autoFillFromLastYear(channel){
+  const wk = NAV.weekStart;
+  const week = ensureWeek(channel, wk);
+  const targets = defaultWeekEntries(channel, wk);
   if(!targets.length){
     showToast('前年の同じ週の実績データがある商品が見つかりませんでした。');
     return;
   }
-  const willOverwrite = targets.some(function(t){ return (week.qty[t.code] || 0) > 0; });
+  const willOverwrite = targets.some(function(t){ return (week.qty[t.code] || 0) > 0 && week.qty[t.code] !== t.qty; });
   if(willOverwrite){
     const ok = window.confirm('すでに入力されている数量を、前年実績（10個単位に切り上げ）で上書きします。よろしいですか？');
     if(!ok) return;
@@ -148,7 +175,7 @@ function autoFillFromLastYear(channel){
   dirty = true;
   render();
   const bumpCount = targets.filter(function(t){ return t.hasBump; }).length;
-  showToast('✓ ' + targets.length + '品目に前年実績（10個単位に切り上げ）を反映しました' +
+  showToast('✓ ' + targets.length + '品目を前年実績（10個単位に切り上げ）にリセットしました' +
     (bumpCount ? '（うちキャンペーン分を含む: ' + bumpCount + '品目）' : '') + '。内容を確認して保存してください。');
 }
 
@@ -240,6 +267,7 @@ function upsertMemoLog(channel, kind, key, text){
 
 /* ---------- render: shell ---------- */
 function render(){
+  _defaultQtyCache = {};
   document.getElementById('root').innerHTML = renderApp();
 }
 function renderApp(){
@@ -299,7 +327,7 @@ function renderRetailWeekly(){
     '<span class="status-badge ' + week.status + '">' + (week.status === 'confirmed' ? '✓ 確定済み' : '下書き') + '</span>' +
     '<div class="spacer"></div>' +
     '<button class="this-week-btn" onclick="navThisWeek()">今週へ</button>' +
-    '<button class="btn ghost" onclick="autoFillFromLastYear(\'retail\')" ' + (isReadOnly ? 'disabled' : '') + '>📈 前年実績から自動入力</button>' +
+    '<button class="btn ghost" onclick="autoFillFromLastYear(\'retail\')" ' + (isReadOnly ? 'disabled' : '') + '>🔄 前年実績にリセット</button>' +
     '<button class="btn primary" onclick="toggleConfirm(\'retail\')" ' + (isReadOnly ? 'disabled' : '') + '>' +
       (week.status === 'confirmed' ? '↩ 下書きに戻す' : 'この週を確定する') + '</button>' +
     '</div>';
@@ -329,7 +357,7 @@ function renderRetailWeekly(){
   out += '<div class="footer-bar">' +
     '<div class="grand-total">今週の製造予定合計<b id="rw-grand">' + fmtInt(weekGrandTotal('retail', wk)) + '個</b></div>' +
     '<div class="spacer"></div>' +
-    '<button class="btn ghost" onclick="autoFillFromLastYear(\'retail\')" ' + (isReadOnly ? 'disabled' : '') + '>📈 前年実績から自動入力（10個単位に切り上げ）</button>' +
+    '<button class="btn ghost" onclick="autoFillFromLastYear(\'retail\')" ' + (isReadOnly ? 'disabled' : '') + '>🔄 前年実績にリセット（10個単位に切り上げ）</button>' +
     '<button class="btn" onclick="saveDraft(\'retail\')" ' + (isReadOnly ? 'disabled' : '') + '>下書き保存</button>' +
     '<button class="btn primary" onclick="toggleConfirm(\'retail\')" ' + (isReadOnly ? 'disabled' : '') + '>' +
       (week.status === 'confirmed' ? '↩ 下書きに戻す' : 'この週を確定する') + '</button>' +
