@@ -13,6 +13,7 @@ const NAV = {
   view: 'weekly',
   weekStart: null,
   monthKey: null,
+  printMode: 'week', // 'week' | 'month' — which period the print preview shows
   collapsed: {},
   memoModalOpen: false,
   memoModalChannel: null,
@@ -391,8 +392,17 @@ function renderGroupOrderView(){
   return out;
 }
 
-/* ---------- print preview (both channels, current week, real entered quantities) ---------- */
+/* ---------- print preview (both channels, week or month, real entered quantities) ---------- */
+function setPrintMode(mode){ NAV.printMode = mode; render(); }
 function renderPrintView(channel){
+  const mode = NAV.printMode || 'week';
+  let out = '<div class="subnav no-print">' +
+    '<button class="' + (mode === 'week' ? 'active' : '') + '" onclick="setPrintMode(\'week\')">週次で印刷</button>' +
+    '<button class="' + (mode === 'month' ? 'active' : '') + '" onclick="setPrintMode(\'month\')">月次で印刷</button>' +
+    '</div>';
+  return out + (mode === 'month' ? renderPrintViewMonth(channel) : renderPrintViewWeek(channel));
+}
+function renderPrintViewWeek(channel){
   const wk = NAV.weekStart;
   const monday = parseIso(wk);
   const week = getWeek(channel, wk);
@@ -435,6 +445,50 @@ function renderPrintView(channel){
     });
     out += '</tbody></table>';
     out += '<div class="print-grand">製造予定合計　<b>' + fmtInt(weekGrandTotal('wholesale', wk)) + '個</b></div>';
+  }
+  out += '</div>';
+  return out;
+}
+function renderPrintViewMonth(channel){
+  const mk = NAV.monthKey;
+  const grand = monthGrandTotal(channel, mk);
+  let out = '<div class="print-toolbar no-print">' +
+    '<button class="nav-arrow" onclick="navPrevMonth()">‹</button>' +
+    '<div class="period-label">' + fmtMonthLabel(mk) + '</div>' +
+    '<button class="nav-arrow" onclick="navNextMonth()">›</button>' +
+    '<div class="spacer"></div>' +
+    '<button class="btn primary" onclick="window.print()">🖨 このページを印刷</button>' +
+    '</div>';
+  out += '<div class="print-sheet">';
+  out += '<div class="print-head">' +
+    '<div class="print-title">製造予定表　' + (channel === 'retail' ? '通信販売' : '卸販売') + '</div>' +
+    '<div class="print-sub">' + fmtMonthLabel(mk) + '　（月次合計）</div>' +
+    '</div>';
+  if(grand === 0){
+    out += '<div class="empty-note">この月はまだ製造予定数が入力されていません。週次計画画面で数量を入力すると、ここに月合計として反映されます。</div>';
+  } else if(channel === 'retail'){
+    const groups = groupedRetailProducts();
+    groups.forEach(function(g, i){
+      const items = g.products.filter(function(p){ return monthProductTotal('retail', mk, p.code) > 0; });
+      if(!items.length) return;
+      const subtotal = monthGroupSubtotal('retail', mk, g.products);
+      out += '<div class="print-group">' +
+        '<div class="print-group-title"><span class="rank">' + pad2(i + 1) + '</span><span class="gname">' + esc(g.name) + '</span><span class="gtotal">小計 <b>' + fmtInt(subtotal) + '個</b></span></div>' +
+        '<table class="print-table"><tbody>';
+      items.forEach(function(p){
+        out += '<tr><td class="code">' + esc(p.code) + '</td><td>' + esc(p.name) + '</td><td class="qty">' + fmtInt(monthProductTotal('retail', mk, p.code)) + '</td></tr>';
+      });
+      out += '</tbody></table></div>';
+    });
+    out += '<div class="print-grand">製造予定合計　<b>' + fmtInt(grand) + '個</b></div>';
+  } else {
+    const items = MASTER.wholesaleProducts.filter(function(p){ return monthProductTotal('wholesale', mk, p.code) > 0; });
+    out += '<table class="print-table"><tbody>';
+    items.forEach(function(p){
+      out += '<tr><td class="code">' + esc(p.code) + '</td><td>' + esc(p.name) + '</td><td class="qty">' + fmtInt(monthProductTotal('wholesale', mk, p.code)) + '</td></tr>';
+    });
+    out += '</tbody></table>';
+    out += '<div class="print-grand">製造予定合計　<b>' + fmtInt(grand) + '個</b></div>';
   }
   out += '</div>';
   return out;
@@ -736,10 +790,31 @@ function renderMemoCard(channel, kind, key, text){
   return '<div class="memo-card">' +
     '<div class="memo-card-title"><span>製造メモ（この' + (kind === 'week' ? '週' : '月') + '）</span>' +
     '<button class="link-btn" onclick="openMemoHistory(\'' + channel + '\')">🗂 メモ履歴を見る</button></div>' +
-    '<textarea id="' + inputId + '" placeholder="例：容器の不足で予定数量が作れなかった…">' + esc(text) + '</textarea>' +
+    '<textarea id="' + inputId + '" placeholder="例：容器の不足で予定数量が作れなかった…（来年見返す時のために残しておきましょう）">' + esc(text) + '</textarea>' +
     '<div class="memo-actions">' +
       '<button class="btn small" onclick="saveMemo(\'' + channel + '\',\'' + kind + '\',\'' + key + '\',\'' + inputId + '\')" ' + (isReadOnly ? 'disabled' : '') + '>メモを保存</button>' +
-    '</div></div>';
+    '</div>' +
+    renderPastMemoRef(channel, kind, key) +
+    '</div>';
+}
+function refMonthKey(mk, yearsBack){
+  const parts = mk.split('-').map(Number);
+  return (parts[0] - yearsBack) + '-' + pad2(parts[1]);
+}
+function findMemoEntry(channel, kind, key){
+  const log = chData(channel).memoLog;
+  return log.find(function(m){ return m.kind === kind && m.key === key; }) || null;
+}
+function renderPastMemoRef(channel, kind, key){
+  const refKey = kind === 'week' ? refWeekIso(key, 1) : refMonthKey(key, 1);
+  const entry = findMemoEntry(channel, kind, refKey);
+  if(!entry || !entry.text) return '';
+  const d = new Date(entry.savedAt);
+  const label = kind === 'week' ? '昨年同時期のメモ' : '昨年同月のメモ';
+  return '<div class="memo-history">' +
+    '<div class="memo-past-label">' + label + '</div>' +
+    '<div class="memo-past-item">「' + esc(entry.text) + '」<span>' + d.getFullYear() + '年' + (d.getMonth() + 1) + '月' + d.getDate() + '日</span></div>' +
+    '</div>';
 }
 function renderMemoModal(){
   if(!NAV.memoModalOpen) return '';
@@ -979,6 +1054,7 @@ window.navNextWeek = navNextWeek;
 window.navThisWeek = navThisWeek;
 window.navPrevMonth = navPrevMonth;
 window.navNextMonth = navNextMonth;
+window.setPrintMode = setPrintMode;
 window.toggleGroupCollapse = toggleGroupCollapse;
 window.onQtyInput = onQtyInput;
 window.moveGroupUp = moveGroupUp;
