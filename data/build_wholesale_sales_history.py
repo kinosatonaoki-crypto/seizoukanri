@@ -7,10 +7,10 @@ app_master_data.json に「salesHistory.wholesale」として追記するスク�
 使い方:
     python3 build_wholesale_sales_history.py <卸受注データ.xlsx> [--years N]
 
-- 入力Excelの想定シート/列は、通販の受注データと同じ並びを仮定しています：
-  シート「受注データ」、列 A=受注日 B=受注NO C=商品コード D=商品名 E=規格
-  F=数量 G=単位名 H=売単価 I=売上金額
-  ※実際のファイルが届いたら、シート名・列の並びが上記と違っていないか必ず確認し、
+- 入力Excelの想定シート/列（2026年8月に届いた実データ「卸_売上データ」に合わせたもの）：
+  シート「売上データ」、列 A=出荷日 ... V=商品コード(22) ... AB=総数量(28)
+  （日付は出荷日、数量は総数量＝入り数・ケース数を掛けた実個数を使用）
+  ※別の卸データファイルが届いた場合は、シート名・列の並びが同じか必ず確認し、
     違う場合はこのスクリプトの --sheet や列番号（COL_* の定数）を実データに合わせて
     修正してください。
 - 「今のマスタ（wholesaleProducts）に存在する商品コード」だけを対象にする。
@@ -37,9 +37,9 @@ HERE = Path(__file__).parent
 MASTER_PATH = HERE / "app_master_data.json"
 
 # 列番号（1始まり）。実データの並びが違う場合はここを調整してください。
-COL_DATE = 1
-COL_CODE = 3
-COL_QTY = 6
+COL_DATE = 1   # 出荷日
+COL_CODE = 22  # 商品コード
+COL_QTY = 28   # 総数量（入り数・ケース数を掛けた実個数）
 
 
 def monday_of(d):
@@ -50,7 +50,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("xlsx_path")
     ap.add_argument("--years", type=int, default=2)
-    ap.add_argument("--sheet", default="受注データ")
+    ap.add_argument("--sheet", default="売上データ")
     args = ap.parse_args()
 
     master = json.loads(MASTER_PATH.read_text(encoding="utf-8"))
