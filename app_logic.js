@@ -16,6 +16,7 @@ const NAV = {
   collapsed: {},
   memoModalOpen: false,
   memoModalChannel: null,
+  ocr: { status: 'idle', file: null, previewUrl: null, progressPct: 0, rows: [], errorMsg: '' },
 };
 
 /* ---------- date helpers ---------- */
@@ -145,11 +146,13 @@ function renderRetailBody(){
     '<button class="' + (NAV.view === 'weekly' ? 'active' : '') + '" onclick="navView(\'weekly\')">週次計画</button>' +
     '<button class="' + (NAV.view === 'monthly' ? 'active' : '') + '" onclick="navView(\'monthly\')">月次計画</button>' +
     '<button class="' + (NAV.view === 'grouporder' ? 'active' : '') + '" onclick="navView(\'grouporder\')">グループ並び順</button>' +
+    '<button class="' + (NAV.view === 'ocr' ? 'active' : '') + '" onclick="navView(\'ocr\')">📷 OCR取込</button>' +
     '<button class="' + (NAV.view === 'print' ? 'active' : '') + '" onclick="navView(\'print\')">🖨 印刷プレビュー</button>' +
     '</div><div class="view-pad">';
   if(NAV.view === 'weekly') out += renderRetailWeekly();
   else if(NAV.view === 'monthly') out += renderRetailMonthly();
   else if(NAV.view === 'grouporder') out += renderGroupOrderView();
+  else if(NAV.view === 'ocr') out += renderOcrView('retail');
   else out += renderPrintView('retail');
   out += '</div>';
   return out;
@@ -310,11 +313,13 @@ function renderWholesaleBody(){
   let out = '<div class="subnav no-print">' +
     '<button class="' + (NAV.view === 'weekly' ? 'active' : '') + '" onclick="navView(\'weekly\')">週次計画</button>' +
     '<button class="' + (NAV.view === 'monthly' ? 'active' : '') + '" onclick="navView(\'monthly\')">月次計画</button>' +
+    '<button class="' + (NAV.view === 'ocr' ? 'active' : '') + '" onclick="navView(\'ocr\')">📷 OCR取込</button>' +
     '<button class="' + (NAV.view === 'print' ? 'active' : '') + '" onclick="navView(\'print\')">🖨 印刷プレビュー</button>' +
     '</div><div class="view-pad">';
-  if(NAV.view !== 'print') out += '<div class="known-issue">現時点のマスタデータには「どの取引先がどの商品をいくつ買うか」の対応表がないため、卸販売は商品別合計のみで作成しています。取引先別の内訳が必要な場合は、取引先マスタの整備とあわせて追加を検討してください。</div>';
+  if(NAV.view !== 'print' && NAV.view !== 'ocr') out += '<div class="known-issue">現時点のマスタデータには「どの取引先がどの商品をいくつ買うか」の対応表がないため、卸販売は商品別合計のみで作成しています。取引先別の内訳が必要な場合は、取引先マスタの整備とあわせて追加を検討してください。</div>';
   if(NAV.view === 'weekly') out += renderWholesaleWeekly();
   else if(NAV.view === 'monthly') out += renderWholesaleMonthly();
+  else if(NAV.view === 'ocr') out += renderOcrView('wholesale');
   else out += renderPrintView('wholesale');
   out += '</div>';
   return out;
@@ -376,6 +381,221 @@ function renderWholesaleMonthly(){
   out += '<div class="footer-bar"><div class="grand-total">' + fmtMonthLabel(mk) + 'の製造予定合計<b>' + fmtInt(monthGrandTotal('wholesale', mk)) + '個</b></div></div>';
   out += renderMemoCard('wholesale', 'month', mk, month.memo);
   return out;
+}
+
+/* ---------- OCR取込（写真の読み取りによる入力補助） ---------- */
+function renderOcrView(channel){
+  const products = channel === 'retail' ? MASTER.retailProducts : MASTER.wholesaleProducts;
+  const o = NAV.ocr;
+  let out = '<div class="known-issue">紙の伝票・注文書などをスマホで撮影して、数量の入力を補助する機能です。読み取り結果はあくまで目安なので、必ずこの画面で内容を確認してから反映してください（印刷された文字向けの機能で、手書きの精度は高くありません）。</div>';
+
+  if(o.status === 'idle' || o.status === 'error'){
+    out += '<div class="ocr-dropzone">' +
+      '<div style="margin-bottom:10px;color:var(--muted);font-size:13px;">写真を選ぶか、その場で撮影してください</div>' +
+      '<label class="btn primary ocr-pick-btn">写真を選ぶ／撮影する' +
+        '<input type="file" accept="image/*" capture="environment" onchange="onOcrFileSelected(this,\'' + channel + '\')"></label>' +
+      (o.status === 'error' ? '<div style="margin-top:10px;color:var(--warn);font-size:12.5px;">' + esc(o.errorMsg || '読み取りに失敗しました。もう一度お試しください。') + '</div>' : '') +
+      '</div>';
+    return out;
+  }
+
+  out += '<div class="ocr-preview-wrap">';
+  if(o.previewUrl) out += '<img src="' + o.previewUrl + '" alt="撮影した写真">';
+  out += '<div style="flex:1;min-width:220px;">';
+  if(o.status === 'preview'){
+    out += '<button class="btn primary" onclick="startOcrRecognition(\'' + channel + '\')">この写真を読み取る</button> ' +
+      '<button class="btn ghost" onclick="resetOcr()">やり直す</button>';
+  } else if(o.status === 'processing'){
+    const pct = Math.round((o.progressPct || 0) * 100);
+    out += '<div class="ocr-progress">読み取り中…（' + pct + '%）' +
+      '<div class="ocr-progress-bar"><div style="width:' + pct + '%"></div></div></div>';
+  } else if(o.status === 'review'){
+    out += '<div style="color:var(--muted);font-size:12.5px;">' + o.rows.length + '行を検出しました。内容を確認し、必要に応じて商品・数量を修正してから反映してください。</div>';
+  }
+  out += '</div></div>';
+
+  if(o.status === 'review'){
+    if(!o.rows.length){
+      out += '<div class="empty-note">数量らしき行を検出できませんでした。写真の向き・明るさを変えて撮り直すか、週次計画画面で直接入力してください。</div>' +
+        '<div class="go-bottom"><button class="btn ghost" onclick="resetOcr()">やり直す</button></div>';
+    } else {
+      out += '<div class="ocr-list">';
+      o.rows.forEach(function(row, i){
+        out += '<div class="ocr-row">' +
+          '<input type="checkbox" ' + (row.include ? 'checked' : '') + ' onchange="toggleOcrRowInclude(' + i + ')">' +
+          '<select onchange="updateOcrRowField(' + i + ',\'matchedCode\',this.value,\'' + channel + '\')">' +
+            '<option value=""' + (row.matchedCode ? '' : ' selected') + '>（商品を選択）</option>' +
+            products.map(function(p){
+              return '<option value="' + esc(p.code) + '"' + (p.code === row.matchedCode ? ' selected' : '') + '>' + esc(p.name) + '</option>';
+            }).join('') +
+          '</select>' +
+          '<input type="number" min="0" inputmode="numeric" value="' + (row.qty === null ? '' : row.qty) + '" placeholder="数量" ' +
+            'oninput="updateOcrRowField(' + i + ',\'qty\',this.value,\'' + channel + '\')">' +
+          '<span class="raw">検出テキスト:「' + esc(row.rawLine) + '」' + (!row.matchedCode ? '<span class="unmatched"> ・候補なし</span>' : '') + '</span>' +
+          '</div>';
+      });
+      out += '</div>';
+      out += '<div class="go-bottom">' +
+        '<button class="btn ghost" onclick="resetOcr()">やり直す</button>' +
+        '<div class="spacer"></div>' +
+        '<button class="btn primary" onclick="applyOcrRows(\'' + channel + '\')" ' + (isReadOnly ? 'disabled' : '') + '>チェックした内容を今週の入力欄に反映</button>' +
+        '</div>';
+    }
+  }
+  return out;
+}
+function onOcrFileSelected(input, channel){
+  const file = input.files && input.files[0];
+  if(!file) return;
+  if(NAV.ocr.previewUrl) URL.revokeObjectURL(NAV.ocr.previewUrl);
+  NAV.ocr.file = file;
+  NAV.ocr.previewUrl = URL.createObjectURL(file);
+  NAV.ocr.status = 'preview';
+  NAV.ocr.rows = [];
+  NAV.ocr.errorMsg = '';
+  render();
+}
+function resetOcr(){
+  if(NAV.ocr.previewUrl) URL.revokeObjectURL(NAV.ocr.previewUrl);
+  NAV.ocr = { status: 'idle', file: null, previewUrl: null, progressPct: 0, rows: [], errorMsg: '' };
+  render();
+}
+async function startOcrRecognition(channel){
+  NAV.ocr.status = 'processing';
+  NAV.ocr.progressPct = 0;
+  render();
+  try{
+    if(typeof Tesseract === 'undefined'){
+      throw new Error('OCRライブラリの読み込みに失敗しました（通信環境をご確認のうえ、もう一度お試しください）');
+    }
+    const worker = await Tesseract.createWorker('jpn+eng', 1, {
+      logger: function(m){
+        if(m && typeof m.progress === 'number'){
+          NAV.ocr.progressPct = m.progress;
+          const pct = Math.round(m.progress * 100);
+          const bar = document.querySelector('.ocr-progress-bar > div');
+          if(bar) bar.style.width = pct + '%';
+          const label = document.querySelector('.ocr-progress');
+          if(label) label.firstChild.textContent = '読み取り中…（' + pct + '%）';
+        }
+      },
+    });
+    const result = await worker.recognize(NAV.ocr.file);
+    await worker.terminate();
+    const text = (result && result.data && result.data.text) || '';
+    const products = channel === 'retail' ? MASTER.retailProducts : MASTER.wholesaleProducts;
+    NAV.ocr.rows = parseOcrLines(text, products);
+    NAV.ocr.status = 'review';
+    render();
+  } catch(err){
+    NAV.ocr.status = 'error';
+    NAV.ocr.errorMsg = (err && err.message) || '読み取りに失敗しました。もう一度お試しください。';
+    render();
+  }
+}
+function toggleOcrRowInclude(i){
+  const row = NAV.ocr.rows[i];
+  if(!row) return;
+  row.include = !row.include;
+  render();
+}
+function updateOcrRowField(i, field, value, channel){
+  const row = NAV.ocr.rows[i];
+  if(!row) return;
+  if(field === 'qty'){
+    row.qty = value === '' ? null : Math.max(0, parseInt(value, 10) || 0);
+  } else if(field === 'matchedCode'){
+    row.matchedCode = value;
+    const products = channel === 'retail' ? MASTER.retailProducts : MASTER.wholesaleProducts;
+    const p = products.find(function(pp){ return pp.code === value; });
+    row.matchedName = p ? p.name : '';
+    if(value) row.include = true;
+  }
+  render();
+}
+function applyOcrRows(channel){
+  const wk = NAV.weekStart;
+  const week = ensureWeek(channel, wk);
+  let count = 0;
+  NAV.ocr.rows.forEach(function(row){
+    if(row.include && row.matchedCode && row.qty !== null && row.qty !== undefined){
+      week.qty[row.matchedCode] = row.qty;
+      count++;
+    }
+  });
+  if(count > 0) dirty = true;
+  if(NAV.ocr.previewUrl) URL.revokeObjectURL(NAV.ocr.previewUrl);
+  NAV.ocr = { status: 'idle', file: null, previewUrl: null, progressPct: 0, rows: [], errorMsg: '' };
+  NAV.view = 'weekly';
+  render();
+  showToast(count > 0
+    ? '✓ ' + count + '件を今週の入力欄に反映しました。内容を確認して保存してください。'
+    : '反映する行がありませんでした。チェック・商品・数量を確認してください。');
+}
+
+/* ---------- OCR: text extraction & fuzzy product matching (pure functions) ---------- */
+function toHalfWidthDigits(s){
+  return s.replace(/[０-９]/g, function(ch){ return String.fromCharCode(ch.charCodeAt(0) - 0xFEE0); });
+}
+function normalizeForMatch(s){
+  return toHalfWidthDigits(s)
+    .replace(/[\s　]+/g, '')
+    .replace(/[・、。,.\-‐－()（）\[\]【】]/g, '')
+    .toLowerCase();
+}
+function extractQtyFromLine(line){
+  const norm = toHalfWidthDigits(line);
+  const m = norm.match(/([0-9]+)\s*(?:個|袋|本|枚|箱|セット|kg|ｋｇ|g|ｇ)?\s*$/);
+  if(!m) return null;
+  const qty = parseInt(m[1], 10);
+  const namePart = norm.slice(0, norm.length - m[0].length).trim();
+  return { qty: qty, namePart: namePart };
+}
+function bigrams(s){
+  const arr = [];
+  for(let i = 0; i < s.length - 1; i++) arr.push(s.slice(i, i + 2));
+  return arr;
+}
+function diceCoeff(a, b){
+  if(a === b && a.length > 0) return 1;
+  const A = bigrams(a), B = bigrams(b);
+  if(A.length === 0 || B.length === 0) return 0;
+  const pool = B.slice();
+  let matches = 0;
+  for(let i = 0; i < A.length; i++){
+    const idx = pool.indexOf(A[i]);
+    if(idx !== -1){ matches++; pool.splice(idx, 1); }
+  }
+  return (2 * matches) / (A.length + B.length);
+}
+function bestProductMatch(text, products){
+  const norm = normalizeForMatch(text);
+  if(!norm) return null;
+  let best = null, bestScore = 0;
+  for(let i = 0; i < products.length; i++){
+    const p = products[i];
+    const score = diceCoeff(norm, normalizeForMatch(p.name));
+    if(score > bestScore){ bestScore = score; best = p; }
+  }
+  if(!best) return null;
+  return { code: best.code, name: best.name, score: bestScore };
+}
+function parseOcrLines(text, products){
+  const lines = text.split(/\r?\n/).map(function(l){ return l.trim(); }).filter(function(l){ return l.length > 0; });
+  return lines.map(function(line){
+    const extracted = extractQtyFromLine(line);
+    const qty = extracted ? extracted.qty : null;
+    const namePart = extracted ? extracted.namePart : line;
+    const match = bestProductMatch(namePart, products);
+    return {
+      rawLine: line,
+      qty: qty,
+      matchedCode: match ? match.code : '',
+      matchedName: match ? match.name : '',
+      score: match ? match.score : 0,
+      include: !!(match && qty !== null && match.score >= 0.3),
+    };
+  });
 }
 
 /* ---------- memo card + history modal ---------- */
@@ -539,6 +759,7 @@ function buildHtml(state){
     '<div id="root"></div>\n<div class="toast" id="toast"></div>\n' +
     '<script id="app-master" type="application/json">' + masterJson + '<' + '/script>\n' +
     '<script id="app-state" type="application/json">' + stateJson + '<' + '/script>\n' +
+    '<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"><' + '/script>\n' +
     '<script>' + APP_SCRIPT_SOURCE + '<' + '/script>\n' +
     '</body>\n</html>';
 }
@@ -638,3 +859,9 @@ window.saveMemo = saveMemo;
 window.openMemoHistory = openMemoHistory;
 window.closeMemoHistory = closeMemoHistory;
 window.onMemoFilterInput = onMemoFilterInput;
+window.onOcrFileSelected = onOcrFileSelected;
+window.resetOcr = resetOcr;
+window.startOcrRecognition = startOcrRecognition;
+window.toggleOcrRowInclude = toggleOcrRowInclude;
+window.updateOcrRowField = updateOcrRowField;
+window.applyOcrRows = applyOcrRows;

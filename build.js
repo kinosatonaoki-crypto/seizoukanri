@@ -29,6 +29,7 @@ const html = '<!doctype html>\n<html lang="ja">\n<head>\n<meta charset="utf-8">\
   '<div id="root"></div>\n<div class="toast" id="toast"></div>\n' +
   '<script id="app-master" type="application/json">' + masterJson + '<' + '/script>\n' +
   '<script id="app-state" type="application/json">' + stateJson + '<' + '/script>\n' +
+  '<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"><' + '/script>\n' +
   '<script>' + logic + '<' + '/script>\n' +
   '</body>\n</html>';
 
