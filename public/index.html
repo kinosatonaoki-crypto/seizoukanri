@@ -409,16 +409,16 @@ function monthProductTotal(channel, monthKey, code){
 function refWeekIso(wk, yearsBack){
   return isoDate(addDays(parseIso(wk), -364 * yearsBack));
 }
-function historyQty(code, wk, yearsBack){
-  const hist = MASTER.salesHistory && MASTER.salesHistory.retail && MASTER.salesHistory.retail[code];
+function historyQty(channel, code, wk, yearsBack){
+  const hist = MASTER.salesHistory && MASTER.salesHistory[channel] && MASTER.salesHistory[channel][code];
   if(!hist) return null;
   const refWk = refWeekIso(wk, yearsBack);
   const v = hist[refWk];
   return (typeof v === 'number') ? v : null;
 }
-function renderWeekRefHtml(code, wk){
-  const y1 = historyQty(code, wk, 1);
-  const y2 = historyQty(code, wk, 2);
+function renderWeekRefHtml(channel, code, wk){
+  const y1 = historyQty(channel, code, wk, 1);
+  const y2 = historyQty(channel, code, wk, 2);
   if(y1 === null && y2 === null) return '';
   const parts = [];
   if(y1 !== null) parts.push('前年' + fmtInt(y1) + '個');
@@ -428,21 +428,25 @@ function renderWeekRefHtml(code, wk){
 function roundUpToTens(n){ return Math.ceil(n / 10) * 10; }
 
 /* ---------- 前年実績＋キャンペーンによる既定値（製造予定の初期値） ---------- */
-// 通販のみ対応（卸売はまだ実績データが無いため既定値なし＝従来どおり空欄）。
+// 通販・卸売どちらも対応。salesHistory[channel] に実績データが無い間は既定値なし＝従来どおり空欄になる
+// （卸売は実績データの整備待ち。データが揃い次第、何もコードを変えなくても自動的に反映される）。
+// キャンペーン増加分は通販のみの概念（卸売には無い）。
 // まだ何も入力されていない週は、この既定値がそのまま「製造予定数」として最初から表示される。
 // 1回のrender()内で何度も呼ばれるため、週ごとに結果をキャッシュする（render()の先頭でクリア）。
 let _defaultQtyCache = {};
 function defaultWeekEntries(channel, wk){
-  if(channel !== 'retail') return [];
   const cacheKey = channel + '|' + wk;
   if(_defaultQtyCache[cacheKey]) return _defaultQtyCache[cacheKey];
   const campaignBumpByCode = {};
-  weekCampaigns(wk).forEach(function(c){
-    campaignBumpByCode[c.code] = (campaignBumpByCode[c.code] || 0) + c.qty;
-  });
+  if(channel === 'retail'){
+    weekCampaigns(wk).forEach(function(c){
+      campaignBumpByCode[c.code] = (campaignBumpByCode[c.code] || 0) + c.qty;
+    });
+  }
+  const products = channel === 'retail' ? MASTER.retailProducts : MASTER.wholesaleProducts;
   const entries = [];
-  MASTER.retailProducts.forEach(function(p){
-    const h = historyQty(p.code, wk, 1);
+  products.forEach(function(p){
+    const h = historyQty(channel, p.code, wk, 1);
     const bump = campaignBumpByCode[p.code] || 0;
     if(h === null && !bump) return;
     entries.push({ code: p.code, qty: roundUpToTens((h || 0) + bump), hasBump: bump > 0 });
@@ -643,7 +647,7 @@ function renderRetailWeekly(){
       g.products.forEach(function(p){
         const v = week.qty[p.code] || '';
         out += '<tr><td class="name">' + esc(p.name) + '</td>' +
-          '<td class="annual">' + renderWeekRefHtml(p.code, wk) + '年間参考 ' + fmtInt(p.annualQty) + '個</td>' +
+          '<td class="annual">' + renderWeekRefHtml('retail', p.code, wk) + '年間参考 ' + fmtInt(p.annualQty) + '個</td>' +
           '<td class="qtycell"><input type="number" min="0" inputmode="numeric" value="' + (v === 0 ? '' : v) + '" placeholder="0" ' +
           (isReadOnly ? 'disabled' : '') + ' oninput="onQtyInput(this,\'retail\',\'' + wk + '\',\'' + p.code + '\')"></td></tr>';
       });
@@ -863,6 +867,7 @@ function renderWholesaleWeekly(){
     '<span class="status-badge ' + week.status + '">' + (week.status === 'confirmed' ? '✓ 確定済み' : '下書き') + '</span>' +
     '<div class="spacer"></div>' +
     '<button class="this-week-btn" onclick="navThisWeek()">今週へ</button>' +
+    '<button class="btn ghost" onclick="autoFillFromLastYear(\'wholesale\')" ' + (isReadOnly ? 'disabled' : '') + '>🔄 前年実績にリセット</button>' +
     '<button class="btn primary" onclick="toggleConfirm(\'wholesale\')" ' + (isReadOnly ? 'disabled' : '') + '>' +
       (week.status === 'confirmed' ? '↩ 下書きに戻す' : 'この週を確定する') + '</button>' +
     '</div>';
@@ -881,7 +886,7 @@ function renderWholesaleWeekly(){
       g.products.forEach(function(p){
         const v = week.qty[p.code] || '';
         out += '<tr><td class="name">' + esc(p.name) + otherCustomersNote(p.code) + '</td>' +
-          '<td class="annual">年間参考 ' + fmtInt(p.annualQty) + '個</td>' +
+          '<td class="annual">' + renderWeekRefHtml('wholesale', p.code, wk) + '年間参考 ' + fmtInt(p.annualQty) + '個</td>' +
           '<td class="qtycell"><input type="number" min="0" inputmode="numeric" value="' + (v === 0 ? '' : v) + '" placeholder="0" ' +
           (isReadOnly ? 'disabled' : '') + ' oninput="onQtyInput(this,\'wholesale\',\'' + wk + '\',\'' + p.code + '\')"></td></tr>';
       });
@@ -892,6 +897,7 @@ function renderWholesaleWeekly(){
   out += '<div class="footer-bar">' +
     '<div class="grand-total">今週の製造予定合計<b id="ww-grand">' + fmtInt(weekGrandTotal('wholesale', wk)) + '個</b></div>' +
     '<div class="spacer"></div>' +
+    '<button class="btn ghost" onclick="autoFillFromLastYear(\'wholesale\')" ' + (isReadOnly ? 'disabled' : '') + '>🔄 前年実績にリセット（10個単位に切り上げ）</button>' +
     '<button class="btn" onclick="saveDraft(\'wholesale\')" ' + (isReadOnly ? 'disabled' : '') + '>下書き保存</button>' +
     '<button class="btn primary" onclick="toggleConfirm(\'wholesale\')" ' + (isReadOnly ? 'disabled' : '') + '>' +
       (week.status === 'confirmed' ? '↩ 下書きに戻す' : 'この週を確定する') + '</button>' +
