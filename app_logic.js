@@ -90,6 +90,28 @@ function groupedRetailProducts(){
   MASTER.retailProducts.forEach(function(p){ (byGroup[p.group] = byGroup[p.group] || []).push(p); });
   return order.map(function(g){ return { name: g, products: byGroup[g] || [] }; });
 }
+/* ---------- 卸売：取引先ごとのグループ分け ---------- */
+// 各商品は「最も数量の多い取引先」に1つだけ紐付ける（通販の商品グループと同じ考え方）。
+// 複数の取引先が買っている商品には otherCustomersNote() で「（他◯社）」を添える。
+function groupedWholesaleProducts(){
+  const order = (STATE.wholesale.groupOrder && STATE.wholesale.groupOrder.length) ? STATE.wholesale.groupOrder : (MASTER.wholesaleGroupOrder || []);
+  const byCustomer = {};
+  const unlinked = [];
+  MASTER.wholesaleProducts.forEach(function(p){
+    if(p.customerCode){ (byCustomer[p.customerCode] = byCustomer[p.customerCode] || []).push(p); }
+    else { unlinked.push(p); }
+  });
+  const nameOf = {};
+  (MASTER.wholesaleCustomers || []).forEach(function(c){ nameOf[c.code] = c.name; });
+  const groups = order.map(function(code){ return { code: code, name: nameOf[code] || code, products: byCustomer[code] || [] }; });
+  if(unlinked.length) groups.push({ code: null, name: '取引先未設定', products: unlinked });
+  return groups;
+}
+function otherCustomersNote(code){
+  const list = MASTER.wholesaleProductCustomers && MASTER.wholesaleProductCustomers[code];
+  if(!list || list.length <= 1) return '';
+  return '<span class="other-customers">（他' + (list.length - 1) + '社）</span>';
+}
 function weekGroupSubtotal(channel, wk, products){
   const q = getWeek(channel, wk).qty;
   return products.reduce(function(s, p){ return s + (q[p.code] || 0); }, 0);
@@ -466,12 +488,19 @@ function renderPrintViewWeek(channel){
     });
     out += '<div class="print-grand">製造予定合計　<b>' + fmtInt(weekGrandTotal('retail', wk)) + '個</b></div>';
   } else {
-    const items = MASTER.wholesaleProducts.filter(function(p){ return (week.qty[p.code] || 0) > 0; });
-    out += '<table class="print-table"><tbody>';
-    items.forEach(function(p){
-      out += '<tr><td class="code">' + esc(p.code) + '</td><td>' + esc(p.name) + '</td><td class="qty">' + fmtInt(week.qty[p.code]) + '</td></tr>';
+    const groups = groupedWholesaleProducts();
+    groups.forEach(function(g, i){
+      const items = g.products.filter(function(p){ return (week.qty[p.code] || 0) > 0; });
+      if(!items.length) return;
+      const subtotal = items.reduce(function(s, p){ return s + (week.qty[p.code] || 0); }, 0);
+      out += '<div class="print-group">' +
+        '<div class="print-group-title"><span class="rank">' + pad2(i + 1) + '</span><span class="gname">' + esc(g.name) + '</span><span class="gtotal">小計 <b>' + fmtInt(subtotal) + '個</b></span></div>' +
+        '<table class="print-table"><tbody>';
+      items.forEach(function(p){
+        out += '<tr><td class="code">' + esc(p.code) + '</td><td>' + esc(p.name) + '</td><td class="qty">' + fmtInt(week.qty[p.code]) + '</td></tr>';
+      });
+      out += '</tbody></table></div>';
     });
-    out += '</tbody></table>';
     out += '<div class="print-grand">製造予定合計　<b>' + fmtInt(weekGrandTotal('wholesale', wk)) + '個</b></div>';
   }
   out += '</div>';
@@ -510,12 +539,19 @@ function renderPrintViewMonth(channel){
     });
     out += '<div class="print-grand">製造予定合計　<b>' + fmtInt(grand) + '個</b></div>';
   } else {
-    const items = MASTER.wholesaleProducts.filter(function(p){ return monthProductTotal('wholesale', mk, p.code) > 0; });
-    out += '<table class="print-table"><tbody>';
-    items.forEach(function(p){
-      out += '<tr><td class="code">' + esc(p.code) + '</td><td>' + esc(p.name) + '</td><td class="qty">' + fmtInt(monthProductTotal('wholesale', mk, p.code)) + '</td></tr>';
+    const groups = groupedWholesaleProducts();
+    groups.forEach(function(g, i){
+      const items = g.products.filter(function(p){ return monthProductTotal('wholesale', mk, p.code) > 0; });
+      if(!items.length) return;
+      const subtotal = monthGroupSubtotal('wholesale', mk, g.products);
+      out += '<div class="print-group">' +
+        '<div class="print-group-title"><span class="rank">' + pad2(i + 1) + '</span><span class="gname">' + esc(g.name) + '</span><span class="gtotal">小計 <b>' + fmtInt(subtotal) + '個</b></span></div>' +
+        '<table class="print-table"><tbody>';
+      items.forEach(function(p){
+        out += '<tr><td class="code">' + esc(p.code) + '</td><td>' + esc(p.name) + '</td><td class="qty">' + fmtInt(monthProductTotal('wholesale', mk, p.code)) + '</td></tr>';
+      });
+      out += '</tbody></table></div>';
     });
-    out += '</tbody></table>';
     out += '<div class="print-grand">製造予定合計　<b>' + fmtInt(grand) + '個</b></div>';
   }
   out += '</div>';
@@ -527,12 +563,14 @@ function renderWholesaleBody(){
   let out = '<div class="subnav no-print">' +
     '<button class="' + (NAV.view === 'weekly' ? 'active' : '') + '" onclick="navView(\'weekly\')">週次計画</button>' +
     '<button class="' + (NAV.view === 'monthly' ? 'active' : '') + '" onclick="navView(\'monthly\')">月次計画</button>' +
+    '<button class="' + (NAV.view === 'grouporder' ? 'active' : '') + '" onclick="navView(\'grouporder\')">取引先並び順</button>' +
     '<button class="' + (NAV.view === 'ocr' ? 'active' : '') + '" onclick="navView(\'ocr\')">📷 OCR取込</button>' +
     '<button class="' + (NAV.view === 'print' ? 'active' : '') + '" onclick="navView(\'print\')">🖨 印刷プレビュー</button>' +
     '</div><div class="view-pad">';
-  if(NAV.view !== 'print' && NAV.view !== 'ocr') out += '<div class="known-issue">現時点のマスタデータには「どの取引先がどの商品をいくつ買うか」の対応表がないため、卸販売は商品別合計のみで作成しています。取引先別の内訳が必要な場合は、取引先マスタの整備とあわせて追加を検討してください。</div>';
+  if(NAV.view === 'weekly' || NAV.view === 'monthly') out += '<div class="known-issue">卸売は「主にどの取引先が買っているか」で商品をグループ分けして表示しています（1つの商品は最も数量の多い取引先1社に紐付けています。他の取引先も買っている商品には「（他◯社）」と表示されます）。ただし製造予定数はこれまでどおり商品ごとの合計1つだけを入力する形式で、取引先別の内訳数量はまだ管理していません。</div>';
   if(NAV.view === 'weekly') out += renderWholesaleWeekly();
   else if(NAV.view === 'monthly') out += renderWholesaleMonthly();
+  else if(NAV.view === 'grouporder') out += renderWholesaleGroupOrderView();
   else if(NAV.view === 'ocr') out += renderOcrView('wholesale');
   else out += renderPrintView('wholesale');
   out += '</div>';
@@ -542,6 +580,7 @@ function renderWholesaleWeekly(){
   const wk = NAV.weekStart;
   const monday = parseIso(wk);
   const week = getWeek('wholesale', wk);
+  const groups = groupedWholesaleProducts();
   let out = '<div class="week-nav">' +
     '<button class="nav-arrow" onclick="navPrevWeek()">‹</button>' +
     '<div class="period-label">' + fmtWeekLabel(monday) + '</div>' +
@@ -552,14 +591,29 @@ function renderWholesaleWeekly(){
     '<button class="btn primary" onclick="toggleConfirm(\'wholesale\')" ' + (isReadOnly ? 'disabled' : '') + '>' +
       (week.status === 'confirmed' ? '↩ 下書きに戻す' : 'この週を確定する') + '</button>' +
     '</div>';
-  out += '<div class="wide-table-wrap"><table class="wide-table"><thead><tr><th>商品コード</th><th>商品名</th><th class="qtycell">年間参考</th><th class="qtycell">製造予定数</th></tr></thead><tbody>';
-  MASTER.wholesaleProducts.forEach(function(p){
-    const v = week.qty[p.code] || '';
-    out += '<tr><td>' + esc(p.code) + '</td><td>' + esc(p.name) + '</td><td class="annual">' + fmtInt(p.annualQty) + '個</td>' +
-      '<td class="qtycell"><input type="number" min="0" inputmode="numeric" value="' + (v === 0 ? '' : v) + '" placeholder="0" ' +
-      (isReadOnly ? 'disabled' : '') + ' oninput="onQtyInput(this,\'wholesale\',\'' + wk + '\',\'' + p.code + '\')"></td></tr>';
+  groups.forEach(function(g, i){
+    if(!g.products.length) return;
+    const collapsed = !!NAV.collapsed['w:' + (g.code || g.name)];
+    out += '<div class="group-section">' +
+      '<div class="group-head" onclick="toggleGroupCollapse(\'w:' + esc(g.code || g.name) + '\')">' +
+        '<span class="group-rank">' + pad2(i + 1) + '</span>' +
+        '<span class="group-name">' + esc(g.name) + '</span>' +
+        '<span class="group-sub">' + fmtInt(weekGroupSubtotal('wholesale', wk, g.products)) + '個</span>' +
+        '<span class="collapse-caret">' + (collapsed ? '▸' : '▾') + '</span>' +
+      '</div>';
+    if(!collapsed){
+      out += '<table class="item-table"><tbody>';
+      g.products.forEach(function(p){
+        const v = week.qty[p.code] || '';
+        out += '<tr><td class="name">' + esc(p.name) + otherCustomersNote(p.code) + '</td>' +
+          '<td class="annual">年間参考 ' + fmtInt(p.annualQty) + '個</td>' +
+          '<td class="qtycell"><input type="number" min="0" inputmode="numeric" value="' + (v === 0 ? '' : v) + '" placeholder="0" ' +
+          (isReadOnly ? 'disabled' : '') + ' oninput="onQtyInput(this,\'wholesale\',\'' + wk + '\',\'' + p.code + '\')"></td></tr>';
+      });
+      out += '</tbody></table>';
+    }
+    out += '</div>';
   });
-  out += '</tbody></table></div>';
   out += '<div class="footer-bar">' +
     '<div class="grand-total">今週の製造予定合計<b id="ww-grand">' + fmtInt(weekGrandTotal('wholesale', wk)) + '個</b></div>' +
     '<div class="spacer"></div>' +
@@ -574,26 +628,57 @@ function renderWholesaleMonthly(){
   const mk = NAV.monthKey;
   const wks = weekKeysInMonth('wholesale', mk);
   const month = getMonth('wholesale', mk);
+  const groups = groupedWholesaleProducts();
   let out = '<div class="month-nav">' +
     '<button class="nav-arrow" onclick="navPrevMonth()">‹</button>' +
     '<div class="period-label">' + fmtMonthLabel(mk) + '</div>' +
     '<button class="nav-arrow" onclick="navNextMonth()">›</button>' +
     '</div>';
-  out += '<div class="month-weeks-note">この月に含まれる週：' +
+  out += '<div class="month-weeks-note">この月に含まれる週（各週の製造予定をそのまま積み上げた合計です）：' +
     (wks.length ? wks.map(function(w){
       const st = getWeek('wholesale', w).status;
       return '<span class="week-chip ' + st + '">' + fmtWeekLabel(parseIso(w)) + (st === 'confirmed' ? ' 確定' : ' 下書き') + '</span>';
     }).join('') : '<span style="color:var(--muted)">まだこの月に入力された週がありません</span>') +
     '</div>';
-  out += '<div class="wide-table-wrap"><table class="wide-table"><thead><tr><th>商品名</th><th class="qtycell">月合計</th></tr></thead><tbody>';
-  MASTER.wholesaleProducts.forEach(function(p){
-    const t = monthProductTotal('wholesale', mk, p.code);
-    if(t === 0) return;
-    out += '<tr><td>' + esc(p.name) + '</td><td class="qtycell">' + fmtInt(t) + '個</td></tr>';
+  out += '<div class="wide-table-wrap"><table class="month-table"><thead><tr><th class="name">商品（主な取引先順）</th><th>月合計</th></tr></thead><tbody>';
+  groups.forEach(function(g, i){
+    if(!g.products.length) return;
+    out += '<tr class="group-row"><td class="name">' + pad2(i + 1) + '　' + esc(g.name) + '</td><td>' + fmtInt(monthGroupSubtotal('wholesale', mk, g.products)) + '個</td></tr>';
+    g.products.forEach(function(p){
+      const t = monthProductTotal('wholesale', mk, p.code);
+      if(t === 0) return;
+      out += '<tr><td class="name">　' + esc(p.name) + otherCustomersNote(p.code) + '</td><td>' + fmtInt(t) + '個</td></tr>';
+    });
   });
   out += '</tbody></table></div>';
   out += '<div class="footer-bar"><div class="grand-total">' + fmtMonthLabel(mk) + 'の製造予定合計<b>' + fmtInt(monthGrandTotal('wholesale', mk)) + '個</b></div></div>';
   out += renderMemoCard('wholesale', 'month', mk, month.memo);
+  return out;
+}
+function renderWholesaleGroupOrderView(){
+  const order = (STATE.wholesale.groupOrder && STATE.wholesale.groupOrder.length) ? STATE.wholesale.groupOrder : (MASTER.wholesaleGroupOrder || []);
+  const nameOf = {};
+  (MASTER.wholesaleCustomers || []).forEach(function(c){ nameOf[c.code] = c.name; });
+  const byCustomer = {};
+  MASTER.wholesaleProducts.forEach(function(p){ if(p.customerCode) (byCustomer[p.customerCode] = byCustomer[p.customerCode] || []).push(p); });
+  let out = '<div class="known-issue">並び順は週次・月次の計画画面・印刷プレビューに共通で反映されます。変更後は「この並び順を保存」を押してください。</div>';
+  out += '<div class="grouporder-list">';
+  order.forEach(function(code, i){
+    const products = byCustomer[code] || [];
+    out += '<div class="go-row">' +
+      '<span class="go-rank">' + pad2(i + 1) + '</span>' +
+      '<span class="go-name">' + esc(nameOf[code] || code) + '</span>' +
+      '<span class="go-count">' + products.length + '品目</span>' +
+      '<span class="go-arrows">' +
+        '<button onclick="moveWholesaleGroupUp(\'' + esc(code) + '\')" ' + (i === 0 ? 'disabled' : '') + '>▲</button>' +
+        '<button onclick="moveWholesaleGroupDown(\'' + esc(code) + '\')" ' + (i === order.length - 1 ? 'disabled' : '') + '>▼</button>' +
+      '</span></div>';
+  });
+  out += '</div>';
+  out += '<div class="go-bottom">' +
+    '<button class="btn ghost" onclick="resetWholesaleGroupOrder()" ' + (isReadOnly ? 'disabled' : '') + '>初期値（年間売上順）に戻す</button>' +
+    '<button class="btn primary" onclick="saveGroupOrder()" ' + (isReadOnly ? 'disabled' : '') + '>この並び順を保存</button>' +
+    '</div>';
   return out;
 }
 
@@ -933,6 +1018,22 @@ function moveGroupDown(name){
 function resetGroupOrder(){ STATE.retail.groupOrder = MASTER.groupOrder.slice(); dirty = true; render(); }
 async function saveGroupOrder(){ await publishState(); }
 
+function ensureWholesaleGroupOrder(){
+  if(!STATE.wholesale.groupOrder || !STATE.wholesale.groupOrder.length){
+    STATE.wholesale.groupOrder = (MASTER.wholesaleGroupOrder || []).slice();
+  }
+  return STATE.wholesale.groupOrder;
+}
+function moveWholesaleGroupUp(code){
+  const arr = ensureWholesaleGroupOrder(); const i = arr.indexOf(code);
+  if(i > 0){ const tmp = arr[i - 1]; arr[i - 1] = arr[i]; arr[i] = tmp; dirty = true; render(); }
+}
+function moveWholesaleGroupDown(code){
+  const arr = ensureWholesaleGroupOrder(); const i = arr.indexOf(code);
+  if(i < arr.length - 1){ const tmp = arr[i + 1]; arr[i + 1] = arr[i]; arr[i] = tmp; dirty = true; render(); }
+}
+function resetWholesaleGroupOrder(){ STATE.wholesale.groupOrder = (MASTER.wholesaleGroupOrder || []).slice(); dirty = true; render(); }
+
 async function saveDraft(channel){ await publishState(); }
 async function toggleConfirm(channel){
   const wk = NAV.weekStart;
@@ -1089,6 +1190,9 @@ window.moveGroupUp = moveGroupUp;
 window.moveGroupDown = moveGroupDown;
 window.resetGroupOrder = resetGroupOrder;
 window.saveGroupOrder = saveGroupOrder;
+window.moveWholesaleGroupUp = moveWholesaleGroupUp;
+window.moveWholesaleGroupDown = moveWholesaleGroupDown;
+window.resetWholesaleGroupOrder = resetWholesaleGroupOrder;
 window.saveDraft = saveDraft;
 window.toggleConfirm = toggleConfirm;
 window.saveMemo = saveMemo;

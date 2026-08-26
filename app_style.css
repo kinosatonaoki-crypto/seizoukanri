@@ -91,6 +91,7 @@ input[type=number]{font-family:inherit;font-size:14px;}
 .item-table td.qtycell{text-align:right;width:22%;}
 .item-table td.annual{text-align:right;color:var(--muted);font-size:12px;width:18%;}
 .week-ref{color:var(--accent);font-weight:600;margin-bottom:2px;}
+.other-customers{color:var(--muted);font-weight:400;font-size:12px;margin-left:4px;}
 .item-table input[type=number]{
   width:96px;padding:6px 8px;border:1px solid var(--rule);border-radius:6px;text-align:right;
 }
@@ -115,6 +116,10 @@ input[type=number]{font-family:inherit;font-size:14px;}
   font-family:inherit;font-size:13.5px;resize:vertical;
 }
 .memo-actions{display:flex;align-items:center;gap:10px;margin-top:8px;}
+.memo-history{margin-top:12px;padding-top:12px;border-top:1px solid var(--rule);}
+.memo-past-label{font-size:11px;font-weight:700;letter-spacing:.03em;color:var(--accent);margin-bottom:6px;}
+.memo-past-item{font-size:13px;color:var(--ink);}
+.memo-past-item span{display:block;font-size:11.5px;color:var(--muted);margin-top:3px;}
 .link-btn{background:none;border:none;color:var(--accent);font-weight:700;font-size:12.5px;text-decoration:underline;padding:0;}
 
 .month-table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--rule);border-radius:10px;overflow:hidden;}
