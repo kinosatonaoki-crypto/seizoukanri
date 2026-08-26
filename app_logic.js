@@ -94,6 +94,26 @@ function monthProductTotal(channel, monthKey, code){
   const wks = weekKeysInMonth(channel, monthKey);
   return wks.reduce(function(s, wk){ return s + (getWeek(channel, wk).qty[code] || 0); }, 0);
 }
+/* ---------- 実績参考（前年同期・前々年同期） ---------- */
+function refWeekIso(wk, yearsBack){
+  return isoDate(addDays(parseIso(wk), -364 * yearsBack));
+}
+function historyQty(code, wk, yearsBack){
+  const hist = MASTER.salesHistory && MASTER.salesHistory.retail && MASTER.salesHistory.retail[code];
+  if(!hist) return null;
+  const refWk = refWeekIso(wk, yearsBack);
+  const v = hist[refWk];
+  return (typeof v === 'number') ? v : null;
+}
+function renderWeekRefHtml(code, wk){
+  const y1 = historyQty(code, wk, 1);
+  const y2 = historyQty(code, wk, 2);
+  if(y1 === null && y2 === null) return '';
+  const parts = [];
+  if(y1 !== null) parts.push('前年' + fmtInt(y1) + '個');
+  if(y2 !== null) parts.push('前々年' + fmtInt(y2) + '個');
+  return '<div class="week-ref">参考（同時期実績）: ' + parts.join('／') + '</div>';
+}
 function monthGrandTotal(channel, monthKey){
   const wks = weekKeysInMonth(channel, monthKey);
   return wks.reduce(function(s, wk){ return s + weekGrandTotal(channel, wk); }, 0);
@@ -186,7 +206,7 @@ function renderRetailWeekly(){
       g.products.forEach(function(p){
         const v = week.qty[p.code] || '';
         out += '<tr><td class="name">' + esc(p.name) + '</td>' +
-          '<td class="annual">年間参考 ' + fmtInt(p.annualQty) + '個</td>' +
+          '<td class="annual">' + renderWeekRefHtml(p.code, wk) + '年間参考 ' + fmtInt(p.annualQty) + '個</td>' +
           '<td class="qtycell"><input type="number" min="0" inputmode="numeric" value="' + (v === 0 ? '' : v) + '" placeholder="0" ' +
           (isReadOnly ? 'disabled' : '') + ' oninput="onQtyInput(this,\'retail\',\'' + wk + '\',\'' + p.code + '\')"></td></tr>';
       });
