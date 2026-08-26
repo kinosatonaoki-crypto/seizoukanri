@@ -16,6 +16,7 @@ const NAV = {
   collapsed: {},
   memoModalOpen: false,
   memoModalChannel: null,
+  campaignModalOpen: false,
   ocr: { status: 'idle', file: null, previewUrl: null, progressPct: 0, rows: [], errorMsg: '' },
 };
 
@@ -119,11 +120,19 @@ function autoFillFromLastYear(channel){
   const wk = NAV.weekStart;
   const week = ensureWeek(channel, wk);
   const products = channel === 'retail' ? MASTER.retailProducts : MASTER.wholesaleProducts;
+  const campaignBumpByCode = {};
+  if(channel === 'retail'){
+    weekCampaigns(wk).forEach(function(c){
+      campaignBumpByCode[c.code] = (campaignBumpByCode[c.code] || 0) + c.qty;
+    });
+  }
 
   const targets = [];
   products.forEach(function(p){
     const h = historyQty(p.code, wk, 1);
-    if(h !== null) targets.push({ code: p.code, qty: roundUpToTens(h) });
+    const bump = campaignBumpByCode[p.code] || 0;
+    if(h === null && !bump) return;
+    targets.push({ code: p.code, qty: roundUpToTens((h || 0) + bump), hasBump: bump > 0 });
   });
   if(!targets.length){
     showToast('前年の同じ週の実績データがある商品が見つかりませんでした。');
@@ -137,7 +146,82 @@ function autoFillFromLastYear(channel){
   targets.forEach(function(t){ week.qty[t.code] = t.qty; });
   dirty = true;
   render();
-  showToast('✓ ' + targets.length + '品目に前年実績（10個単位に切り上げ）を反映しました。内容を確認して保存してください。');
+  const bumpCount = targets.filter(function(t){ return t.hasBump; }).length;
+  showToast('✓ ' + targets.length + '品目に前年実績（10個単位に切り上げ）を反映しました' +
+    (bumpCount ? '（うちキャンペーン分を含む: ' + bumpCount + '品目）' : '') + '。内容を確認して保存してください。');
+}
+
+/* ---------- 実施中のキャンペーン（増加分の登録） ---------- */
+function genId(){ return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+function weekCampaigns(wk){
+  const c = STATE.retail.campaigns;
+  return (c && c[wk]) || [];
+}
+function openCampaignModal(){ NAV.campaignModalOpen = true; render(); }
+function closeCampaignModal(){ NAV.campaignModalOpen = false; render(); }
+function submitCampaign(){
+  const wk = NAV.weekStart;
+  const code = document.getElementById('cmp-product').value;
+  const title = document.getElementById('cmp-title').value.trim();
+  const qty = parseInt(document.getElementById('cmp-qty').value, 10);
+  const memo = document.getElementById('cmp-memo').value.trim();
+  if(!code || !title || !qty || qty <= 0){
+    showToast('対象商品・施策名・増加数量（1以上）を入力してください。');
+    return;
+  }
+  if(!STATE.retail.campaigns) STATE.retail.campaigns = {};
+  if(!STATE.retail.campaigns[wk]) STATE.retail.campaigns[wk] = [];
+  STATE.retail.campaigns[wk].push({ id: genId(), code: code, title: title, qty: qty, memo: memo });
+  dirty = true;
+  NAV.campaignModalOpen = false;
+  render();
+  showToast('✓ キャンペーンを追加しました。内容を確認して保存してください。');
+}
+function deleteCampaign(wk, id){
+  if(!STATE.retail.campaigns || !STATE.retail.campaigns[wk]) return;
+  STATE.retail.campaigns[wk] = STATE.retail.campaigns[wk].filter(function(c){ return c.id !== id; });
+  dirty = true;
+  render();
+}
+function renderCampaignBanner(wk){
+  const list = weekCampaigns(wk);
+  let out = '<div class="campaign-banner no-print"><div class="campaign-icon">📣</div><div class="campaign-body">' +
+    '<div class="campaign-title-row"><div class="campaign-title">現在実施中のキャンペーン</div>' +
+    '<button class="link-btn" onclick="openCampaignModal()" ' + (isReadOnly ? 'disabled' : '') + '>＋ 増加分を追加</button></div>';
+  if(!list.length){
+    out += '<div style="color:var(--muted);font-size:12.5px;">この週に登録されているキャンペーンはありません</div>';
+  } else {
+    out += '<div class="campaign-list">';
+    list.forEach(function(c){
+      const p = MASTER.retailProducts.find(function(pp){ return pp.code === c.code; });
+      out += '<div class="campaign-chip"><b>' + esc(c.title) + '</b> ' + esc(p ? p.name : c.code) +
+        ' <span class="delta">+' + fmtInt(c.qty) + '個</span>' +
+        (c.memo ? ' <span class="camp-memo-note">・' + esc(c.memo) + '</span>' : '') +
+        ' <button class="camp-del" onclick="deleteCampaign(\'' + wk + '\',\'' + c.id + '\')" ' + (isReadOnly ? 'disabled' : '') + '>×</button></div>';
+    });
+    out += '</div>';
+  }
+  out += '</div></div>';
+  return out;
+}
+function renderCampaignModal(){
+  if(!NAV.campaignModalOpen) return '';
+  const products = MASTER.retailProducts;
+  return '<div class="modal-overlay open"><div class="modal-box">' +
+    '<div class="modal-title">増加分を追加</div>' +
+    '<div class="modal-sub">お中元・お歳暮のDMやカタログ、催事など、通常予測を上回る予定がある場合にここから登録します（' +
+      fmtWeekLabel(parseIso(NAV.weekStart)) + 'の週に登録されます）。</div>' +
+    '<div class="field"><label>対象商品</label><select id="cmp-product">' +
+      products.map(function(p){ return '<option value="' + esc(p.code) + '">' + esc(p.name) + '</option>'; }).join('') +
+    '</select></div>' +
+    '<div class="field-row">' +
+      '<div class="field"><label>施策名</label><input type="text" id="cmp-title" placeholder="例：秋の贈答フェア"></div>' +
+      '<div class="field"><label>増加数量</label><input type="number" id="cmp-qty" min="1" placeholder="例：200"></div>' +
+    '</div>' +
+    '<div class="field"><label>メモ（任意）</label><textarea id="cmp-memo" placeholder="例：お中元DM・表紙掲載"></textarea></div>' +
+    '<div class="modal-actions"><button class="btn ghost" onclick="closeCampaignModal()">キャンセル</button>' +
+    '<button class="btn primary" onclick="submitCampaign()">追加する</button></div>' +
+    '</div></div>';
 }
 function monthGrandTotal(channel, monthKey){
   const wks = weekKeysInMonth(channel, monthKey);
@@ -158,7 +242,7 @@ function render(){
   document.getElementById('root').innerHTML = renderApp();
 }
 function renderApp(){
-  return renderTopbar() + renderStatusStrip() + renderBody() + renderMemoModal();
+  return renderTopbar() + renderStatusStrip() + renderBody() + renderMemoModal() + renderCampaignModal();
 }
 function renderTopbar(){
   return '' +
@@ -214,9 +298,11 @@ function renderRetailWeekly(){
     '<span class="status-badge ' + week.status + '">' + (week.status === 'confirmed' ? '✓ 確定済み' : '下書き') + '</span>' +
     '<div class="spacer"></div>' +
     '<button class="this-week-btn" onclick="navThisWeek()">今週へ</button>' +
+    '<button class="btn ghost" onclick="autoFillFromLastYear(\'retail\')" ' + (isReadOnly ? 'disabled' : '') + '>📈 前年実績から自動入力</button>' +
     '<button class="btn primary" onclick="toggleConfirm(\'retail\')" ' + (isReadOnly ? 'disabled' : '') + '>' +
       (week.status === 'confirmed' ? '↩ 下書きに戻す' : 'この週を確定する') + '</button>' +
     '</div>';
+  out += renderCampaignBanner(wk);
   groups.forEach(function(g, i){
     const collapsed = !!NAV.collapsed[g.name];
     out += '<div class="group-section">' +
@@ -912,3 +998,7 @@ window.toggleOcrRowInclude = toggleOcrRowInclude;
 window.updateOcrRowField = updateOcrRowField;
 window.applyOcrRows = applyOcrRows;
 window.autoFillFromLastYear = autoFillFromLastYear;
+window.openCampaignModal = openCampaignModal;
+window.closeCampaignModal = closeCampaignModal;
+window.submitCampaign = submitCampaign;
+window.deleteCampaign = deleteCampaign;

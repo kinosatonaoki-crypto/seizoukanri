@@ -184,6 +184,38 @@ input[type=number]{font-family:inherit;font-size:14px;}
 .ocr-row .raw{flex:1 1 240px;font-size:12px;color:var(--muted);}
 .ocr-row .unmatched{color:var(--warn);font-weight:600;}
 
+.campaign-banner{
+  display:flex;gap:12px;background:var(--accent-light);border:1px solid var(--rule);
+  border-radius:10px;padding:12px 16px;margin-bottom:14px;
+}
+.campaign-icon{font-size:18px;line-height:1;}
+.campaign-body{flex:1;min-width:0;}
+.campaign-title-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;}
+.campaign-title{font-size:11.5px;font-weight:700;letter-spacing:.04em;color:var(--accent);}
+.campaign-list{display:flex;gap:8px;flex-wrap:wrap;}
+.campaign-chip{
+  font-size:12.5px;background:var(--card);border:1px solid var(--rule);border-radius:999px;
+  padding:6px 8px 6px 12px;color:var(--muted);display:inline-flex;align-items:center;gap:6px;
+}
+.campaign-chip b{color:var(--ink);font-weight:700;}
+.campaign-chip .delta{color:var(--accent);font-weight:700;}
+.campaign-chip .camp-memo-note{color:var(--muted);}
+.camp-del{
+  border:none;background:none;color:var(--muted);cursor:pointer;font-size:13px;
+  width:18px;height:18px;line-height:1;border-radius:50%;
+}
+.camp-del:hover{background:var(--rule);}
+
+.field{margin-bottom:12px;}
+.field label{display:block;font-size:12px;color:var(--muted);margin-bottom:5px;font-weight:600;}
+.field select,.field input[type=text],.field input[type=number],.field textarea{
+  width:100%;padding:8px 10px;border:1px solid var(--rule);border-radius:8px;font-family:inherit;font-size:13.5px;
+}
+.field textarea{min-height:56px;resize:vertical;}
+.field-row{display:flex;gap:12px;}
+.field-row .field{flex:1;}
+.modal-sub{font-size:12.5px;color:var(--muted);margin:-4px 0 12px;}
+
 @media (max-width:720px){
   .topbar{flex-direction:column;align-items:flex-start;gap:8px;}
   .item-table td.annual{display:none;}

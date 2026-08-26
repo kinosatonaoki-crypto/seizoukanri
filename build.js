@@ -15,7 +15,7 @@ const cssInject = "\nconst CSS_TEXT = `" + css.replace(/\\/g, '\\\\') + "`;\n" +
 const logic = logicTemplate.slice(0, idx + CSS_MARKER.length) + cssInject + logicTemplate.slice(idx + CSS_MARKER.length);
 
 const initialState = {
-  retail: { groupOrder: master.groupOrder.slice(), weeks: {}, months: {}, memoLog: [] },
+  retail: { groupOrder: master.groupOrder.slice(), weeks: {}, months: {}, memoLog: [], campaigns: {} },
   wholesale: { weeks: {}, months: {}, memoLog: [] },
 };
 
