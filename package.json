@@ -1,0 +1,12 @@
+{
+  "name": "seizoukanri-app",
+  "private": true,
+  "version": "1.0.0",
+  "description": "紀の里食品 製造予定作成アプリ",
+  "scripts": {
+    "build": "node build.js"
+  },
+  "dependencies": {
+    "@netlify/blobs": "^11.0.1"
+  }
+}

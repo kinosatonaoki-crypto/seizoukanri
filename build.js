@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const master = JSON.parse(fs.readFileSync(path.join(__dirname, '../realdata/app_master_data.json'), 'utf8'));
+const master = JSON.parse(fs.readFileSync(path.join(__dirname, 'data/app_master_data.json'), 'utf8'));
 const css = fs.readFileSync(path.join(__dirname, 'app_style.css'), 'utf8');
 const logicTemplate = fs.readFileSync(path.join(__dirname, 'app_logic.js'), 'utf8');
 
@@ -32,5 +32,7 @@ const html = '<!doctype html>\n<html lang="ja">\n<head>\n<meta charset="utf-8">\
   '<script>' + logic + '<' + '/script>\n' +
   '</body>\n</html>';
 
-fs.writeFileSync(path.join(__dirname, '../app_prototype_real.html'), html);
+const outDir = path.join(__dirname, 'public');
+if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+fs.writeFileSync(path.join(outDir, 'index.html'), html);
 console.log('written, length', html.length);

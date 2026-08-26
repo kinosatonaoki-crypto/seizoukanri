@@ -3,7 +3,8 @@ const MASTER = JSON.parse(document.getElementById('app-master').textContent);
 let STATE = JSON.parse(document.getElementById('app-state').textContent);
 
 let claudeArtifact = null;
-let claudeChecked = false;
+let backendMode = 'checking'; // 'checking' | 'artifact' | 'netlify' | 'none'
+let stateVersion = 0;
 let isReadOnly = false;
 let dirty = false;
 
@@ -127,8 +128,8 @@ function renderTopbar(){
 function renderStatusStrip(){
   let cls = 'ok', text = '';
   if(isReadOnly){ cls = 'readonly'; text = '⚠ このビューは閲覧のみです（保存はできません）。'; }
-  else if(!claudeChecked){ cls = 'checking'; text = '保存の準備を確認しています…'; }
-  else if(!claudeArtifact){ cls = 'readonly'; text = '⚠ この画面では自動保存ができません（プレビュー表示です）。入力内容はこの端末を閉じると失われます。'; }
+  else if(backendMode === 'checking'){ cls = 'checking'; text = '保存の準備を確認しています…'; }
+  else if(backendMode === 'none'){ cls = 'readonly'; text = '⚠ この画面では自動保存ができません（プレビュー表示です）。入力内容はこの端末を閉じると失われます。'; }
   if(!text && !dirty) return '';
   return '<div class="status-strip no-print ' + cls + '">' + (text ? '<span>' + text + '</span>' : '') +
     (dirty ? '<span class="dirty-badge"><span class="dirty-dot"></span>未保存の変更があります</span>' : '') + '</div>';
@@ -504,13 +505,31 @@ function showToast(msg){
   clearTimeout(showToast._h);
   showToast._h = setTimeout(function(){ t.classList.remove('show'); }, 2600);
 }
-async function ensureArtifact(){
-  if(claudeChecked) return claudeArtifact;
+async function ensureBackend(){
+  if(backendMode !== 'checking') return backendMode;
   try{
     claudeArtifact = (typeof window.claude !== 'undefined' && window.claude.use) ? await window.claude.use('artifact') : null;
   } catch(e){ claudeArtifact = null; }
-  claudeChecked = true;
-  return claudeArtifact;
+  if(claudeArtifact){
+    backendMode = 'artifact';
+    return backendMode;
+  }
+  /* not running inside the Claude artifact viewer — try the Netlify Functions backend */
+  try{
+    const res = await fetch('/api/state', { headers: { 'accept': 'application/json' } });
+    if(res.ok){
+      const data = await res.json();
+      backendMode = 'netlify';
+      if(data && data.state){
+        STATE = data.state;
+        stateVersion = data.version || 0;
+        render();
+      }
+      return backendMode;
+    }
+  } catch(e){ /* no backend reachable — fall through to 'none' */ }
+  backendMode = 'none';
+  return backendMode;
 }
 function buildHtml(state){
   const masterJson = JSON.stringify(MASTER).replace(/</g, '\\u003c');
@@ -524,36 +543,71 @@ function buildHtml(state){
     '</body>\n</html>';
 }
 async function publishState(){
-  if(!claudeChecked) await ensureArtifact();
-  if(!claudeArtifact){
-    updateStatusStripInPlace();
-    showToast('この画面では保存できません（プレビュー表示です）');
-    return false;
-  }
-  try{
-    const html = buildHtml(STATE);
-    await claudeArtifact.publish(html);
-    dirty = false;
-    updateStatusStripInPlace();
-    showToast('✓ 保存しました');
-    return true;
-  } catch(err){
-    const code = err && err.code;
-    let msg = '保存に失敗しました。もう一度お試しください。';
-    if(code === 'not_writer' || code === 'not_granted' || code === 'consent_required'){
-      isReadOnly = true;
-      msg = 'このビューは閲覧のみです（保存できません）';
-    } else if(code === 'conflict'){
-      /* another view published first; the shell is already reloading this view */
+  if(backendMode === 'checking') await ensureBackend();
+
+  if(backendMode === 'artifact'){
+    try{
+      const html = buildHtml(STATE);
+      await claudeArtifact.publish(html);
+      dirty = false;
+      updateStatusStripInPlace();
+      showToast('✓ 保存しました');
+      return true;
+    } catch(err){
+      const code = err && err.code;
+      let msg = '保存に失敗しました。もう一度お試しください。';
+      if(code === 'not_writer' || code === 'not_granted' || code === 'consent_required'){
+        isReadOnly = true;
+        msg = 'このビューは閲覧のみです（保存できません）';
+      } else if(code === 'conflict'){
+        /* another view published first; the shell is already reloading this view */
+        return false;
+      } else if(code === 'not_declared' || code === 'capability_disabled' || code === 'capability_removed'){
+        claudeArtifact = null;
+        backendMode = 'none';
+        msg = 'この画面では保存できません（プレビュー表示です）';
+      }
+      render();
+      showToast(msg);
       return false;
-    } else if(code === 'not_declared' || code === 'capability_disabled' || code === 'capability_removed'){
-      claudeArtifact = null;
-      msg = 'この画面では保存できません（プレビュー表示です）';
     }
-    render();
-    showToast(msg);
-    return false;
   }
+
+  if(backendMode === 'netlify'){
+    try{
+      const res = await fetch('/api/state', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ state: STATE, expectedVersion: stateVersion }),
+      });
+      if(res.status === 409){
+        const data = await res.json();
+        STATE = data.state || STATE;
+        stateVersion = data.version || stateVersion;
+        dirty = false;
+        render();
+        showToast('他の方が先に保存したため、最新の内容を読み込み直しました。もう一度入力してください。');
+        return false;
+      }
+      if(!res.ok){
+        showToast('保存に失敗しました。もう一度お試しください。');
+        return false;
+      }
+      const data = await res.json();
+      stateVersion = (data && data.version) || (stateVersion + 1);
+      dirty = false;
+      updateStatusStripInPlace();
+      showToast('✓ 保存しました');
+      return true;
+    } catch(err){
+      showToast('保存に失敗しました（通信エラー）。もう一度お試しください。');
+      return false;
+    }
+  }
+
+  updateStatusStripInPlace();
+  showToast('この画面では保存できません（プレビュー表示です）');
+  return false;
 }
 
 /* ---------- init ---------- */
@@ -562,7 +616,7 @@ async function publishState(){
   NAV.weekStart = isoDate(mondayOf(today));
   NAV.monthKey = monthKeyOf(today);
   render();
-  ensureArtifact().then(function(){ updateStatusStripInPlace(); });
+  ensureBackend().then(function(){ updateStatusStripInPlace(); });
 })();
 
 window.navChannel = navChannel;
