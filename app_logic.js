@@ -114,6 +114,31 @@ function renderWeekRefHtml(code, wk){
   if(y2 !== null) parts.push('前々年' + fmtInt(y2) + '個');
   return '<div class="week-ref">参考（同時期実績）: ' + parts.join('／') + '</div>';
 }
+function roundUpToTens(n){ return Math.ceil(n / 10) * 10; }
+function autoFillFromLastYear(channel){
+  const wk = NAV.weekStart;
+  const week = ensureWeek(channel, wk);
+  const products = channel === 'retail' ? MASTER.retailProducts : MASTER.wholesaleProducts;
+
+  const targets = [];
+  products.forEach(function(p){
+    const h = historyQty(p.code, wk, 1);
+    if(h !== null) targets.push({ code: p.code, qty: roundUpToTens(h) });
+  });
+  if(!targets.length){
+    showToast('前年の同じ週の実績データがある商品が見つかりませんでした。');
+    return;
+  }
+  const willOverwrite = targets.some(function(t){ return (week.qty[t.code] || 0) > 0; });
+  if(willOverwrite){
+    const ok = window.confirm('すでに入力されている数量を、前年実績（10個単位に切り上げ）で上書きします。よろしいですか？');
+    if(!ok) return;
+  }
+  targets.forEach(function(t){ week.qty[t.code] = t.qty; });
+  dirty = true;
+  render();
+  showToast('✓ ' + targets.length + '品目に前年実績（10個単位に切り上げ）を反映しました。内容を確認して保存してください。');
+}
 function monthGrandTotal(channel, monthKey){
   const wks = weekKeysInMonth(channel, monthKey);
   return wks.reduce(function(s, wk){ return s + weekGrandTotal(channel, wk); }, 0);
@@ -217,6 +242,7 @@ function renderRetailWeekly(){
   out += '<div class="footer-bar">' +
     '<div class="grand-total">今週の製造予定合計<b id="rw-grand">' + fmtInt(weekGrandTotal('retail', wk)) + '個</b></div>' +
     '<div class="spacer"></div>' +
+    '<button class="btn ghost" onclick="autoFillFromLastYear(\'retail\')" ' + (isReadOnly ? 'disabled' : '') + '>📈 前年実績から自動入力（10個単位に切り上げ）</button>' +
     '<button class="btn" onclick="saveDraft(\'retail\')" ' + (isReadOnly ? 'disabled' : '') + '>下書き保存</button>' +
     '<button class="btn primary" onclick="toggleConfirm(\'retail\')" ' + (isReadOnly ? 'disabled' : '') + '>' +
       (week.status === 'confirmed' ? '↩ 下書きに戻す' : 'この週を確定する') + '</button>' +
@@ -885,3 +911,4 @@ window.startOcrRecognition = startOcrRecognition;
 window.toggleOcrRowInclude = toggleOcrRowInclude;
 window.updateOcrRowField = updateOcrRowField;
 window.applyOcrRows = applyOcrRows;
+window.autoFillFromLastYear = autoFillFromLastYear;
