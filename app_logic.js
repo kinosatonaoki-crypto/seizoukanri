@@ -21,6 +21,7 @@ const NAV = {
   memoModalChannel: null,
   campaignModalOpen: false,
   monthlyNoteModalOpen: false,
+  breakdownProductCode: null, // 「商品内訳設定」画面で選択中の商品コード
   ocr: { status: 'idle', file: null, previewUrl: null, progressPct: 0, rows: [], errorMsg: '' },
 };
 
@@ -114,6 +115,80 @@ function otherCustomersNote(code){
   const list = MASTER.wholesaleProductCustomers && MASTER.wholesaleProductCustomers[code];
   if(!list || list.length <= 1) return '';
   return '<span class="other-customers">（他' + (list.length - 1) + '社）</span>';
+}
+
+/* ---------- 卸売：商品ごとの内訳（割合ベース） ---------- */
+// 「梅きらら70g」のように、1商品の中に複数の内訳品目（バリエーション）が内包されている場合に、
+// 商品ごとに「内訳品目名＋割合(%)」をSTATE側で自由に設定でき、製造予定数を割合で按分した
+// 内訳個数を週次・月次・印刷で確認できるようにする仕組み。実数がわからない前提のため、
+// 割合は手動設定（0%のままなら内訳表示は行われない）。
+// 梅きらら70gだけは、あらかじめ教えてもらった内訳品目名を割合0%の状態で登録しておく
+// （ユーザーが「商品内訳設定」画面から割合だけ入力すればすぐ使える）。
+const DEFAULT_BREAKDOWN_NAMES = {
+  '104000004': ['極上漬', 'はちみつ梅', 'かつお梅', '甘口はちみつ梅', 'りんご梅', 'しそ漬梅', 'みかん梅', '白干梅', 'こんぶ梅', '極上小梅', 'しそ小梅', 'はちみつ小梅', 'かつお小梅']
+};
+function ensureProductBreakdowns(){
+  if(!STATE.wholesale.productBreakdowns) STATE.wholesale.productBreakdowns = {};
+  return STATE.wholesale.productBreakdowns;
+}
+function productBreakdown(code){
+  const b = ensureProductBreakdowns();
+  if(!b[code] && DEFAULT_BREAKDOWN_NAMES[code]){
+    b[code] = DEFAULT_BREAKDOWN_NAMES[code].map(function(name){ return { id: genId(), name: name, percent: 0 }; });
+  }
+  return b[code] || [];
+}
+function breakdownTotalPercent(code){
+  return productBreakdown(code).reduce(function(s, it){ return s + (it.percent || 0); }, 0);
+}
+function fmtPctDisplay(n){
+  const r = Math.round((n || 0) * 10) / 10;
+  return (r % 1 === 0) ? String(r) : r.toFixed(1);
+}
+function breakdownQtyList(code, qty){
+  return productBreakdown(code).map(function(it){
+    return { name: it.name, percent: it.percent || 0, qty: Math.round((qty || 0) * (it.percent || 0) / 100) };
+  });
+}
+function renderBreakdownInteractiveHtml(code, qty){
+  const items = productBreakdown(code);
+  if(!items.length) return '';
+  const key = 'bd:' + code;
+  const open = !!NAV.collapsed[key];
+  let out = '<button type="button" class="link-btn breakdown-toggle no-print" onclick="toggleGroupCollapse(\'' + key + '\')">' +
+    (open ? '▲ 内訳を閉じる' : '▼ 内訳を見る') + '（' + items.length + '品目）</button>';
+  if(open){
+    const totalPct = breakdownTotalPercent(code);
+    const off = items.length && Math.round(totalPct * 10) / 10 !== 100;
+    out += '<table class="breakdown-table no-print"><tbody>';
+    items.forEach(function(it, idx){
+      const n = Math.round((qty || 0) * (it.percent || 0) / 100);
+      out += '<tr><td class="bd-name">' + esc(it.name || '（品目名未設定）') + '</td>' +
+        '<td class="bd-pct">' + fmtPctDisplay(it.percent) + '%</td>' +
+        '<td class="bd-qty" id="bd-qty-' + esc(code) + '-' + idx + '">' + fmtInt(n) + '個</td></tr>';
+    });
+    out += '</tbody></table>';
+    if(off){
+      out += '<div class="breakdown-warn no-print">※ 割合の合計が' + fmtPctDisplay(totalPct) + '%です（「商品内訳設定」で100%になるよう調整してください）</div>';
+    }
+  }
+  return out;
+}
+function updateBreakdownInPlace(code, qty){
+  const items = productBreakdown(code);
+  if(!items.length) return;
+  items.forEach(function(it, idx){
+    const el = document.getElementById('bd-qty-' + code + '-' + idx);
+    if(el) el.textContent = fmtInt(Math.round((qty || 0) * (it.percent || 0) / 100)) + '個';
+  });
+}
+function renderBreakdownPrintRow(code, qty){
+  const items = productBreakdown(code);
+  if(!items.length || !qty) return '';
+  const parts = breakdownQtyList(code, qty).map(function(it){
+    return esc(it.name || '（品目名未設定）') + ' ' + fmtInt(it.qty) + '個';
+  });
+  return '<tr class="print-breakdown-row"><td></td><td colspan="2" class="print-breakdown">内訳：' + parts.join('／') + '</td></tr>';
 }
 function weekGroupSubtotal(channel, wk, products){
   const q = getWeek(channel, wk).qty;
@@ -632,6 +707,7 @@ function renderPrintViewWeek(channel){
         '<table class="print-table"><tbody>';
       items.forEach(function(p){
         out += '<tr><td class="code">' + esc(p.code) + '</td><td>' + esc(p.name) + '</td><td class="qty">' + fmtInt(week.qty[p.code]) + '</td></tr>';
+        out += renderBreakdownPrintRow(p.code, week.qty[p.code]);
       });
       out += '</tbody></table></div>';
     });
@@ -683,6 +759,7 @@ function renderPrintViewMonth(channel){
         '<table class="print-table"><tbody>';
       items.forEach(function(p){
         out += '<tr><td class="code">' + esc(p.code) + '</td><td>' + esc(p.name) + '</td><td class="qty">' + fmtInt(monthProductTotal('wholesale', mk, p.code)) + '</td></tr>';
+        out += renderBreakdownPrintRow(p.code, monthProductTotal('wholesale', mk, p.code));
       });
       out += '</tbody></table></div>';
     });
@@ -745,6 +822,7 @@ function renderPrintViewRange(channel){
         '<table class="print-table"><tbody>';
       items.forEach(function(p){
         out += '<tr><td class="code">' + esc(p.code) + '</td><td>' + esc(p.name) + '</td><td class="qty">' + fmtInt(rangeProductTotal('wholesale', wks, p.code)) + '</td></tr>';
+        out += renderBreakdownPrintRow(p.code, rangeProductTotal('wholesale', wks, p.code));
       });
       out += '</tbody></table></div>';
     });
@@ -760,6 +838,7 @@ function renderWholesaleBody(){
     '<button class="' + (NAV.view === 'weekly' ? 'active' : '') + '" onclick="navView(\'weekly\')">週次計画</button>' +
     '<button class="' + (NAV.view === 'monthly' ? 'active' : '') + '" onclick="navView(\'monthly\')">月次計画</button>' +
     '<button class="' + (NAV.view === 'grouporder' ? 'active' : '') + '" onclick="navView(\'grouporder\')">取引先並び順</button>' +
+    '<button class="' + (NAV.view === 'breakdown' ? 'active' : '') + '" onclick="navView(\'breakdown\')">商品内訳設定</button>' +
     '<button class="' + (NAV.view === 'ocr' ? 'active' : '') + '" onclick="navView(\'ocr\')">📷 OCR取込</button>' +
     '<button class="' + (NAV.view === 'print' ? 'active' : '') + '" onclick="navView(\'print\')">🖨 印刷プレビュー</button>' +
     '</div><div class="view-pad">';
@@ -767,6 +846,7 @@ function renderWholesaleBody(){
   if(NAV.view === 'weekly') out += renderWholesaleWeekly();
   else if(NAV.view === 'monthly') out += renderWholesaleMonthly();
   else if(NAV.view === 'grouporder') out += renderWholesaleGroupOrderView();
+  else if(NAV.view === 'breakdown') out += renderWholesaleBreakdownView();
   else if(NAV.view === 'ocr') out += renderOcrView('wholesale');
   else out += renderPrintView('wholesale');
   out += '</div>';
@@ -806,6 +886,8 @@ function renderWholesaleWeekly(){
           '<td class="annual">' + renderWeekRefHtml('wholesale', p.code, wk) + '年間参考 ' + fmtInt(p.annualQty) + '個</td>' +
           '<td class="qtycell"><input type="number" min="0" inputmode="numeric" value="' + (v === 0 ? '' : v) + '" placeholder="0" ' +
           (isReadOnly ? 'disabled' : '') + ' oninput="onQtyInput(this,\'wholesale\',\'' + wk + '\',\'' + p.code + '\')"></td></tr>';
+        const bdHtml = renderBreakdownInteractiveHtml(p.code, week.qty[p.code] || 0);
+        if(bdHtml) out += '<tr class="breakdown-row"><td colspan="3">' + bdHtml + '</td></tr>';
       });
       out += '</tbody></table>';
     }
@@ -847,6 +929,8 @@ function renderWholesaleMonthly(){
       const t = monthProductTotal('wholesale', mk, p.code);
       if(t === 0) return;
       out += '<tr><td class="name">　' + esc(p.name) + otherCustomersNote(p.code) + '</td><td>' + fmtInt(t) + '個</td></tr>';
+      const bdHtml = renderBreakdownInteractiveHtml(p.code, t);
+      if(bdHtml) out += '<tr class="breakdown-row"><td colspan="2">' + bdHtml + '</td></tr>';
     });
   });
   out += '</tbody></table></div>';
@@ -877,6 +961,42 @@ function renderWholesaleGroupOrderView(){
   out += '<div class="go-bottom">' +
     '<button class="btn ghost" onclick="resetWholesaleGroupOrder()" ' + (isReadOnly ? 'disabled' : '') + '>初期値（年間売上順）に戻す</button>' +
     '<button class="btn primary" onclick="saveGroupOrder()" ' + (isReadOnly ? 'disabled' : '') + '>この並び順を保存</button>' +
+    '</div>';
+  return out;
+}
+function renderWholesaleBreakdownView(){
+  if(!NAV.breakdownProductCode) NAV.breakdownProductCode = Object.keys(DEFAULT_BREAKDOWN_NAMES)[0] || (MASTER.wholesaleProducts[0] && MASTER.wholesaleProducts[0].code);
+  const code = NAV.breakdownProductCode;
+  const items = productBreakdown(code);
+  const totalPct = breakdownTotalPercent(code);
+  const off = items.length && Math.round(totalPct * 10) / 10 !== 100;
+  let out = '<div class="known-issue">卸の商品には「梅きらら70g」のように、複数の内訳品目（バリエーション）が内包されているものがあります。ここで内訳品目名と割合（%）を登録すると、週次計画・月次計画・印刷プレビューで、製造予定数を割合で按分した内訳個数を確認できるようになります。割合がまだ分からない場合は0%のままで構いません（その場合、内訳は表示されません）。</div>';
+  out += '<div class="field" style="max-width:420px;"><label>対象商品</label><select onchange="setBreakdownProduct(this.value)">' +
+    MASTER.wholesaleProducts.map(function(p){
+      return '<option value="' + esc(p.code) + '"' + (p.code === code ? ' selected' : '') + '>' + esc(p.name) + '</option>';
+    }).join('') +
+    '</select></div>';
+  out += '<div class="breakdown-editor">';
+  out += '<div class="breakdown-editor-head"><span>内訳品目名</span><span>割合(%)</span><span></span></div>';
+  items.forEach(function(it){
+    out += '<div class="breakdown-editor-row">' +
+      '<input type="text" value="' + esc(it.name) + '" placeholder="例：極上漬" ' + (isReadOnly ? 'disabled' : '') +
+        ' oninput="updateBreakdownItemName(\'' + esc(code) + '\',\'' + it.id + '\',this.value)">' +
+      '<input type="number" min="0" step="0.1" value="' + (it.percent || 0) + '" ' + (isReadOnly ? 'disabled' : '') +
+        ' oninput="updateBreakdownItemPercent(\'' + esc(code) + '\',\'' + it.id + '\',this.value)">' +
+      '<button class="camp-del" onclick="removeBreakdownItem(\'' + esc(code) + '\',\'' + it.id + '\')" ' + (isReadOnly ? 'disabled' : '') + '>×</button>' +
+      '</div>';
+  });
+  if(!items.length){
+    out += '<div style="padding:14px;color:var(--muted);font-size:12.5px;">まだ内訳品目が登録されていません。「＋ 内訳品目を追加」から登録してください。</div>';
+  }
+  out += '</div>';
+  out += '<div class="breakdown-total' + (off ? ' warn' : '') + '" id="bd-total-pct">割合の合計：' + fmtPctDisplay(totalPct) + '%' +
+    (off ? '（100%になるよう調整してください）' : '') + '</div>';
+  out += '<div class="footer-bar">' +
+    '<button class="btn ghost" onclick="addBreakdownItem(\'' + esc(code) + '\')" ' + (isReadOnly ? 'disabled' : '') + '>＋ 内訳品目を追加</button>' +
+    '<div class="spacer"></div>' +
+    '<button class="btn primary" onclick="saveBreakdown()" ' + (isReadOnly ? 'disabled' : '') + '>内訳設定を保存</button>' +
     '</div>';
   return out;
 }
@@ -1181,6 +1301,7 @@ function onQtyInput(el, channel, wk, code){
   dirty = true;
   updateTotalsInPlace(channel, wk);
   updateStatusStripInPlace();
+  if(channel === 'wholesale') updateBreakdownInPlace(code, v);
 }
 function updateTotalsInPlace(channel, wk){
   if(channel === 'retail'){
@@ -1232,6 +1353,43 @@ function moveWholesaleGroupDown(code){
   if(i < arr.length - 1){ const tmp = arr[i + 1]; arr[i + 1] = arr[i]; arr[i] = tmp; dirty = true; render(); }
 }
 function resetWholesaleGroupOrder(){ STATE.wholesale.groupOrder = (MASTER.wholesaleGroupOrder || []).slice(); dirty = true; render(); }
+
+function setBreakdownProduct(code){ NAV.breakdownProductCode = code; render(); }
+function addBreakdownItem(code){
+  const items = productBreakdown(code);
+  ensureProductBreakdowns()[code] = items;
+  items.push({ id: genId(), name: '', percent: 0 });
+  dirty = true;
+  render();
+}
+function removeBreakdownItem(code, id){
+  const items = productBreakdown(code);
+  ensureProductBreakdowns()[code] = items.filter(function(it){ return it.id !== id; });
+  dirty = true;
+  render();
+}
+function updateBreakdownItemName(code, id, value){
+  const items = productBreakdown(code);
+  const it = items.find(function(x){ return x.id === id; });
+  if(it){ it.name = value; dirty = true; updateStatusStripInPlace(); }
+}
+function updateBreakdownTotalInPlace(code){
+  const totalEl = document.getElementById('bd-total-pct');
+  if(!totalEl) return;
+  const items = productBreakdown(code);
+  const totalPct = breakdownTotalPercent(code);
+  const off = items.length && Math.round(totalPct * 10) / 10 !== 100;
+  totalEl.textContent = '割合の合計：' + fmtPctDisplay(totalPct) + '%' + (off ? '（100%になるよう調整してください）' : '');
+  totalEl.classList.toggle('warn', !!off);
+}
+function updateBreakdownItemPercent(code, id, value){
+  const items = productBreakdown(code);
+  const it = items.find(function(x){ return x.id === id; });
+  if(it){ it.percent = Math.max(0, parseFloat(value) || 0); dirty = true; }
+  updateBreakdownTotalInPlace(code);
+  updateStatusStripInPlace();
+}
+async function saveBreakdown(){ await publishState(); }
 
 async function saveDraft(channel){ await publishState(); }
 async function toggleConfirm(channel){
@@ -1395,6 +1553,12 @@ window.saveGroupOrder = saveGroupOrder;
 window.moveWholesaleGroupUp = moveWholesaleGroupUp;
 window.moveWholesaleGroupDown = moveWholesaleGroupDown;
 window.resetWholesaleGroupOrder = resetWholesaleGroupOrder;
+window.setBreakdownProduct = setBreakdownProduct;
+window.addBreakdownItem = addBreakdownItem;
+window.removeBreakdownItem = removeBreakdownItem;
+window.updateBreakdownItemName = updateBreakdownItemName;
+window.updateBreakdownItemPercent = updateBreakdownItemPercent;
+window.saveBreakdown = saveBreakdown;
 window.saveDraft = saveDraft;
 window.toggleConfirm = toggleConfirm;
 window.saveMemo = saveMemo;

@@ -16,7 +16,7 @@ const logic = logicTemplate.slice(0, idx + CSS_MARKER.length) + cssInject + logi
 
 const initialState = {
   retail: { groupOrder: master.groupOrder.slice(), weeks: {}, months: {}, memoLog: [], campaigns: {} },
-  wholesale: { groupOrder: (master.wholesaleGroupOrder || []).slice(), weeks: {}, months: {}, memoLog: [] },
+  wholesale: { groupOrder: (master.wholesaleGroupOrder || []).slice(), weeks: {}, months: {}, memoLog: [], monthlyNotes: {}, productBreakdowns: {} },
 };
 
 function escLt(s){ return s.replace(/</g, '\\u003c'); }
