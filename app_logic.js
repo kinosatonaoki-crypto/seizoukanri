@@ -13,11 +13,14 @@ const NAV = {
   view: 'weekly',
   weekStart: null,
   monthKey: null,
-  printMode: 'week', // 'week' | 'month' — which period the print preview shows
+  printMode: 'week', // 'week' | 'month' | 'range' — which period the print preview shows
+  printRangeStart: null, // 週次計画とは独立した、カスタム週数印刷の起点週（月曜ISO日付）
+  printRangeWeeks: 2, // カスタム週数印刷でまとめて印刷する週数
   collapsed: {},
   memoModalOpen: false,
   memoModalChannel: null,
   campaignModalOpen: false,
+  monthlyNoteModalOpen: false,
   ocr: { status: 'idle', file: null, previewUrl: null, progressPct: 0, rows: [], errorMsg: '' },
 };
 
@@ -120,15 +123,37 @@ function weekGrandTotal(channel, wk){
   const q = getWeek(channel, wk).qty;
   return Object.keys(q).reduce(function(s, k){ return s + (q[k] || 0); }, 0);
 }
-function monthGroupSubtotal(channel, monthKey, products){
-  const wks = weekKeysInMonth(channel, monthKey);
+function rangeGroupSubtotal(channel, wks, products){
   return products.reduce(function(s, p){
     return s + wks.reduce(function(s2, wk){ return s2 + (getWeek(channel, wk).qty[p.code] || 0); }, 0);
   }, 0);
 }
-function monthProductTotal(channel, monthKey, code){
-  const wks = weekKeysInMonth(channel, monthKey);
+function rangeProductTotal(channel, wks, code){
   return wks.reduce(function(s, wk){ return s + (getWeek(channel, wk).qty[code] || 0); }, 0);
+}
+function monthGroupSubtotal(channel, monthKey, products){
+  return rangeGroupSubtotal(channel, weekKeysInMonth(channel, monthKey), products);
+}
+function monthProductTotal(channel, monthKey, code){
+  return rangeProductTotal(channel, weekKeysInMonth(channel, monthKey), code);
+}
+function rangeGrandTotal(channel, wks){
+  return wks.reduce(function(s, wk){ return s + weekGrandTotal(channel, wk); }, 0);
+}
+function rangeWeekKeys(startWk, count){
+  const keys = [];
+  for(let i = 0; i < count; i++){
+    keys.push(isoDate(addDays(parseIso(startWk), i * 7)));
+  }
+  return keys;
+}
+function fmtRangeLabel(wks){
+  const first = parseIso(wks[0]);
+  const last = addDays(parseIso(wks[wks.length - 1]), 6);
+  const tail = first.getFullYear() === last.getFullYear()
+    ? (last.getMonth() + 1) + '月' + last.getDate() + '日'
+    : fmtDateJp(last);
+  return fmtDateJp(first) + '(' + DOW_JP[first.getDay()] + ') 〜 ' + tail + '(' + DOW_JP[last.getDay()] + ')';
 }
 /* ---------- 実績参考（前年同期・前々年同期） ---------- */
 function refWeekIso(wk, yearsBack){
@@ -167,6 +192,15 @@ function defaultWeekEntries(channel, wk){
     weekCampaigns(wk).forEach(function(c){
       campaignBumpByCode[c.code] = (campaignBumpByCode[c.code] || 0) + c.qty;
     });
+  } else {
+    const mk = monthKeyOf(parseIso(wk));
+    const notes = monthNotes(mk);
+    if(notes.length){
+      const weekCount = weekKeysInMonth('wholesale', mk).length || 1;
+      notes.forEach(function(n){
+        campaignBumpByCode[n.code] = (campaignBumpByCode[n.code] || 0) + (n.qty / weekCount);
+      });
+    }
   }
   const products = channel === 'retail' ? MASTER.retailProducts : MASTER.wholesaleProducts;
   const entries = [];
@@ -174,7 +208,8 @@ function defaultWeekEntries(channel, wk){
     const h = historyQty(channel, p.code, wk, 1);
     const bump = campaignBumpByCode[p.code] || 0;
     if(h === null && !bump) return;
-    entries.push({ code: p.code, qty: roundUpToTens((h || 0) + bump), hasBump: bump > 0 });
+    const raw = (h || 0) + bump;
+    entries.push({ code: p.code, qty: Math.max(0, roundUpToTens(raw)), hasBump: bump !== 0 });
   });
   _defaultQtyCache[cacheKey] = entries;
   return entries;
@@ -201,8 +236,9 @@ function autoFillFromLastYear(channel){
   dirty = true;
   render();
   const bumpCount = targets.filter(function(t){ return t.hasBump; }).length;
+  const bumpLabel = channel === 'retail' ? 'キャンペーン分' : '特記事項分';
   showToast('✓ ' + targets.length + '品目を前年実績（10個単位に切り上げ）にリセットしました' +
-    (bumpCount ? '（うちキャンペーン分を含む: ' + bumpCount + '品目）' : '') + '。内容を確認して保存してください。');
+    (bumpCount ? '（うち' + bumpLabel + 'を含む: ' + bumpCount + '品目）' : '') + '。内容を確認して保存してください。');
 }
 
 /* ---------- 実施中のキャンペーン（増加分の登録） ---------- */
@@ -277,9 +313,81 @@ function renderCampaignModal(){
     '<button class="btn primary" onclick="submitCampaign()">追加する</button></div>' +
     '</div></div>';
 }
+
+/* ---------- 卸売：今月の特記事項（増減分の登録） ---------- */
+function monthNotes(mk){
+  const n = STATE.wholesale.monthlyNotes;
+  return (n && n[mk]) || [];
+}
+function openMonthlyNoteModal(){ NAV.monthlyNoteModalOpen = true; render(); }
+function closeMonthlyNoteModal(){ NAV.monthlyNoteModalOpen = false; render(); }
+function submitMonthlyNote(){
+  const mk = NAV.monthKey;
+  const code = document.getElementById('mnote-product').value;
+  const title = document.getElementById('mnote-title').value.trim();
+  const qty = parseInt(document.getElementById('mnote-qty').value, 10);
+  const memo = document.getElementById('mnote-memo').value.trim();
+  if(!code || !title || !qty){
+    showToast('対象商品・件名・増減数量（0以外）を入力してください。');
+    return;
+  }
+  if(!STATE.wholesale.monthlyNotes) STATE.wholesale.monthlyNotes = {};
+  if(!STATE.wholesale.monthlyNotes[mk]) STATE.wholesale.monthlyNotes[mk] = [];
+  STATE.wholesale.monthlyNotes[mk].push({ id: genId(), code: code, title: title, qty: qty, memo: memo });
+  dirty = true;
+  NAV.monthlyNoteModalOpen = false;
+  render();
+  showToast('✓ 特記事項を追加しました。内容を確認して保存してください。');
+}
+function deleteMonthlyNote(mk, id){
+  if(!STATE.wholesale.monthlyNotes || !STATE.wholesale.monthlyNotes[mk]) return;
+  STATE.wholesale.monthlyNotes[mk] = STATE.wholesale.monthlyNotes[mk].filter(function(n){ return n.id !== id; });
+  dirty = true;
+  render();
+}
+function renderMonthlyNoteBanner(mk){
+  const list = monthNotes(mk);
+  let out = '<div class="campaign-banner no-print"><div class="campaign-icon">📝</div><div class="campaign-body">' +
+    '<div class="campaign-title-row"><div class="campaign-title">今月の特記事項</div>' +
+    '<button class="link-btn" onclick="openMonthlyNoteModal()" ' + (isReadOnly ? 'disabled' : '') + '>＋ 特記事項を追加</button></div>';
+  if(!list.length){
+    out += '<div style="color:var(--muted);font-size:12.5px;">この月に登録されている特記事項はありません</div>';
+  } else {
+    out += '<div class="campaign-list">';
+    list.forEach(function(n){
+      const p = MASTER.wholesaleProducts.find(function(pp){ return pp.code === n.code; });
+      const neg = n.qty < 0;
+      out += '<div class="campaign-chip"><b>' + esc(n.title) + '</b> ' + esc(p ? p.name : n.code) +
+        ' <span class="delta' + (neg ? ' negative' : '') + '">' + (neg ? '' : '+') + fmtInt(n.qty) + '個</span>' +
+        (n.memo ? ' <span class="camp-memo-note">・' + esc(n.memo) + '</span>' : '') +
+        ' <button class="camp-del" onclick="deleteMonthlyNote(\'' + mk + '\',\'' + n.id + '\')" ' + (isReadOnly ? 'disabled' : '') + '>×</button></div>';
+    });
+    out += '</div>';
+  }
+  out += '</div></div>';
+  return out;
+}
+function renderMonthlyNoteModal(){
+  if(!NAV.monthlyNoteModalOpen) return '';
+  const products = MASTER.wholesaleProducts;
+  return '<div class="modal-overlay open"><div class="modal-box">' +
+    '<div class="modal-title">特記事項を追加</div>' +
+    '<div class="modal-sub">取引先の催事出店・スポット発注・取引縮小など、前年実績だけでは読めない増減が見込まれる場合に' +
+      'ここから登録します（' + fmtMonthLabel(NAV.monthKey) + 'に登録されます）。増える場合はプラス、減る場合はマイナスの数量を入力してください。</div>' +
+    '<div class="field"><label>対象商品</label><select id="mnote-product">' +
+      products.map(function(p){ return '<option value="' + esc(p.code) + '">' + esc(p.name) + '</option>'; }).join('') +
+    '</select></div>' +
+    '<div class="field-row">' +
+      '<div class="field"><label>件名</label><input type="text" id="mnote-title" placeholder="例：〇〇物産展に出店"></div>' +
+      '<div class="field"><label>増減数量</label><input type="number" id="mnote-qty" placeholder="例：300　減る場合は-100など"></div>' +
+    '</div>' +
+    '<div class="field"><label>メモ（任意）</label><textarea id="mnote-memo" placeholder="例：A社より事前連絡あり"></textarea></div>' +
+    '<div class="modal-actions"><button class="btn ghost" onclick="closeMonthlyNoteModal()">キャンセル</button>' +
+    '<button class="btn primary" onclick="submitMonthlyNote()">追加する</button></div>' +
+    '</div></div>';
+}
 function monthGrandTotal(channel, monthKey){
-  const wks = weekKeysInMonth(channel, monthKey);
-  return wks.reduce(function(s, wk){ return s + weekGrandTotal(channel, wk); }, 0);
+  return rangeGrandTotal(channel, weekKeysInMonth(channel, monthKey));
 }
 function upsertMemoLog(channel, kind, key, text){
   const c = chData(channel);
@@ -297,7 +405,7 @@ function render(){
   document.getElementById('root').innerHTML = renderApp();
 }
 function renderApp(){
-  return renderTopbar() + renderStatusStrip() + renderBody() + renderMemoModal() + renderCampaignModal();
+  return renderTopbar() + renderStatusStrip() + renderBody() + renderMemoModal() + renderCampaignModal() + renderMonthlyNoteModal();
 }
 function renderTopbar(){
   return '' +
@@ -447,14 +555,36 @@ function renderGroupOrderView(){
 }
 
 /* ---------- print preview (both channels, week or month, real entered quantities) ---------- */
-function setPrintMode(mode){ NAV.printMode = mode; render(); }
+function setPrintMode(mode){
+  NAV.printMode = mode;
+  if(mode === 'range' && !NAV.printRangeStart) NAV.printRangeStart = NAV.weekStart;
+  render();
+}
+function navPrintRangePrev(){
+  if(!NAV.printRangeStart) NAV.printRangeStart = NAV.weekStart;
+  NAV.printRangeStart = isoDate(addDays(parseIso(NAV.printRangeStart), -7 * NAV.printRangeWeeks));
+  render();
+}
+function navPrintRangeNext(){
+  if(!NAV.printRangeStart) NAV.printRangeStart = NAV.weekStart;
+  NAV.printRangeStart = isoDate(addDays(parseIso(NAV.printRangeStart), 7 * NAV.printRangeWeeks));
+  render();
+}
+function setPrintRangeWeeks(n){
+  n = Math.max(1, Math.min(8, parseInt(n, 10) || 1));
+  NAV.printRangeWeeks = n;
+  render();
+}
 function renderPrintView(channel){
   const mode = NAV.printMode || 'week';
   let out = '<div class="subnav no-print">' +
     '<button class="' + (mode === 'week' ? 'active' : '') + '" onclick="setPrintMode(\'week\')">週次で印刷</button>' +
     '<button class="' + (mode === 'month' ? 'active' : '') + '" onclick="setPrintMode(\'month\')">月次で印刷</button>' +
+    '<button class="' + (mode === 'range' ? 'active' : '') + '" onclick="setPrintMode(\'range\')">週数指定で印刷</button>' +
     '</div>';
-  return out + (mode === 'month' ? renderPrintViewMonth(channel) : renderPrintViewWeek(channel));
+  if(mode === 'month') return out + renderPrintViewMonth(channel);
+  if(mode === 'range') return out + renderPrintViewRange(channel);
+  return out + renderPrintViewWeek(channel);
 }
 function renderPrintViewWeek(channel){
   const wk = NAV.weekStart;
@@ -561,6 +691,68 @@ function renderPrintViewMonth(channel){
   out += '</div>';
   return out;
 }
+function renderPrintViewRange(channel){
+  if(!NAV.printRangeStart) NAV.printRangeStart = NAV.weekStart;
+  const weeksCount = NAV.printRangeWeeks || 2;
+  const wks = rangeWeekKeys(NAV.printRangeStart, weeksCount);
+  const grand = rangeGrandTotal(channel, wks);
+  const weekOptions = [2, 3, 4, 5, 6].map(function(n){
+    return '<option value="' + n + '"' + (n === weeksCount ? ' selected' : '') + '>' + n + '週分</option>';
+  }).join('');
+  let out = '<div class="print-toolbar no-print">' +
+    '<button class="nav-arrow" onclick="navPrintRangePrev()">‹</button>' +
+    '<div class="period-label">' + fmtRangeLabel(wks) + '</div>' +
+    '<button class="nav-arrow" onclick="navPrintRangeNext()">›</button>' +
+    '<select onchange="setPrintRangeWeeks(this.value)">' + weekOptions + '</select>' +
+    '<div class="spacer"></div>' +
+    '<button class="btn primary" onclick="window.print()">🖨 このページを印刷</button>' +
+    '</div>';
+  out += '<div class="range-weeks-note no-print">含まれる週：' +
+    wks.map(function(w){
+      const st = getWeek(channel, w).status;
+      return '<span class="week-chip ' + st + '">' + fmtWeekLabel(parseIso(w)) + (st === 'confirmed' ? ' 確定' : ' 下書き') + '</span>';
+    }).join('') + '</div>';
+  out += '<div class="print-sheet">';
+  out += '<div class="print-head">' +
+    '<div class="print-title">製造予定表　' + (channel === 'retail' ? '通信販売' : '卸販売') + '</div>' +
+    '<div class="print-sub">' + fmtRangeLabel(wks) + '　（' + weeksCount + '週分合計）</div>' +
+    '</div>';
+  if(grand === 0){
+    out += '<div class="empty-note">この期間はまだ製造予定数が入力されていません。週次計画画面で数量を入力すると、ここに合計として反映されます。</div>';
+  } else if(channel === 'retail'){
+    const groups = groupedRetailProducts();
+    groups.forEach(function(g, i){
+      const items = g.products.filter(function(p){ return rangeProductTotal('retail', wks, p.code) > 0; });
+      if(!items.length) return;
+      const subtotal = rangeGroupSubtotal('retail', wks, g.products);
+      out += '<div class="print-group">' +
+        '<div class="print-group-title"><span class="rank">' + pad2(i + 1) + '</span><span class="gname">' + esc(g.name) + '</span><span class="gtotal">小計 <b>' + fmtInt(subtotal) + '個</b></span></div>' +
+        '<table class="print-table"><tbody>';
+      items.forEach(function(p){
+        out += '<tr><td class="code">' + esc(p.code) + '</td><td>' + esc(p.name) + '</td><td class="qty">' + fmtInt(rangeProductTotal('retail', wks, p.code)) + '</td></tr>';
+      });
+      out += '</tbody></table></div>';
+    });
+    out += '<div class="print-grand">製造予定合計　<b>' + fmtInt(grand) + '個</b></div>';
+  } else {
+    const groups = groupedWholesaleProducts();
+    groups.forEach(function(g, i){
+      const items = g.products.filter(function(p){ return rangeProductTotal('wholesale', wks, p.code) > 0; });
+      if(!items.length) return;
+      const subtotal = rangeGroupSubtotal('wholesale', wks, g.products);
+      out += '<div class="print-group">' +
+        '<div class="print-group-title"><span class="rank">' + pad2(i + 1) + '</span><span class="gname">' + esc(g.name) + '</span><span class="gtotal">小計 <b>' + fmtInt(subtotal) + '個</b></span></div>' +
+        '<table class="print-table"><tbody>';
+      items.forEach(function(p){
+        out += '<tr><td class="code">' + esc(p.code) + '</td><td>' + esc(p.name) + '</td><td class="qty">' + fmtInt(rangeProductTotal('wholesale', wks, p.code)) + '</td></tr>';
+      });
+      out += '</tbody></table></div>';
+    });
+    out += '<div class="print-grand">製造予定合計　<b>' + fmtInt(grand) + '個</b></div>';
+  }
+  out += '</div>';
+  return out;
+}
 
 /* ---------- wholesale ---------- */
 function renderWholesaleBody(){
@@ -640,6 +832,7 @@ function renderWholesaleMonthly(){
     '<div class="period-label">' + fmtMonthLabel(mk) + '</div>' +
     '<button class="nav-arrow" onclick="navNextMonth()">›</button>' +
     '</div>';
+  out += renderMonthlyNoteBanner(mk);
   out += '<div class="month-weeks-note">この月に含まれる週（各週の製造予定をそのまま積み上げた合計です）：' +
     (wks.length ? wks.map(function(w){
       const st = getWeek('wholesale', w).status;
@@ -1190,6 +1383,9 @@ window.navThisWeek = navThisWeek;
 window.navPrevMonth = navPrevMonth;
 window.navNextMonth = navNextMonth;
 window.setPrintMode = setPrintMode;
+window.navPrintRangePrev = navPrintRangePrev;
+window.navPrintRangeNext = navPrintRangeNext;
+window.setPrintRangeWeeks = setPrintRangeWeeks;
 window.toggleGroupCollapse = toggleGroupCollapse;
 window.onQtyInput = onQtyInput;
 window.moveGroupUp = moveGroupUp;
@@ -1216,3 +1412,7 @@ window.openCampaignModal = openCampaignModal;
 window.closeCampaignModal = closeCampaignModal;
 window.submitCampaign = submitCampaign;
 window.deleteCampaign = deleteCampaign;
+window.openMonthlyNoteModal = openMonthlyNoteModal;
+window.closeMonthlyNoteModal = closeMonthlyNoteModal;
+window.submitMonthlyNote = submitMonthlyNote;
+window.deleteMonthlyNote = deleteMonthlyNote;

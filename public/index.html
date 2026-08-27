@@ -246,6 +246,8 @@ input[type=number]{font-family:inherit;font-size:14px;}
   display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid var(--rule);
   border-radius:10px;padding:12px 16px;margin-bottom:14px;flex-wrap:wrap;
 }
+.print-toolbar select{padding:6px 8px;border:1px solid var(--rule);border-radius:6px;font-family:inherit;font-size:13px;background:#fff;}
+.range-weeks-note{font-size:12.5px;color:var(--muted);margin-bottom:14px;}
 .print-sheet{
   background:#fff;border:1px solid var(--rule);border-radius:6px;padding:18mm 16mm;
   max-width:210mm;margin:0 auto 40px;box-shadow:0 2px 10px rgba(43,35,32,.08);
@@ -289,7 +291,9 @@ const NAV = {
   view: 'weekly',
   weekStart: null,
   monthKey: null,
-  printMode: 'week', // 'week' | 'month' — which period the print preview shows
+  printMode: 'week', // 'week' | 'month' | 'range' — which period the print preview shows
+  printRangeStart: null, // 週次計画とは独立した、カスタム週数印刷の起点週（月曜ISO日付）
+  printRangeWeeks: 2, // カスタム週数印刷でまとめて印刷する週数
   collapsed: {},
   memoModalOpen: false,
   memoModalChannel: null,
@@ -397,15 +401,37 @@ function weekGrandTotal(channel, wk){
   const q = getWeek(channel, wk).qty;
   return Object.keys(q).reduce(function(s, k){ return s + (q[k] || 0); }, 0);
 }
-function monthGroupSubtotal(channel, monthKey, products){
-  const wks = weekKeysInMonth(channel, monthKey);
+function rangeGroupSubtotal(channel, wks, products){
   return products.reduce(function(s, p){
     return s + wks.reduce(function(s2, wk){ return s2 + (getWeek(channel, wk).qty[p.code] || 0); }, 0);
   }, 0);
 }
-function monthProductTotal(channel, monthKey, code){
-  const wks = weekKeysInMonth(channel, monthKey);
+function rangeProductTotal(channel, wks, code){
   return wks.reduce(function(s, wk){ return s + (getWeek(channel, wk).qty[code] || 0); }, 0);
+}
+function monthGroupSubtotal(channel, monthKey, products){
+  return rangeGroupSubtotal(channel, weekKeysInMonth(channel, monthKey), products);
+}
+function monthProductTotal(channel, monthKey, code){
+  return rangeProductTotal(channel, weekKeysInMonth(channel, monthKey), code);
+}
+function rangeGrandTotal(channel, wks){
+  return wks.reduce(function(s, wk){ return s + weekGrandTotal(channel, wk); }, 0);
+}
+function rangeWeekKeys(startWk, count){
+  const keys = [];
+  for(let i = 0; i < count; i++){
+    keys.push(isoDate(addDays(parseIso(startWk), i * 7)));
+  }
+  return keys;
+}
+function fmtRangeLabel(wks){
+  const first = parseIso(wks[0]);
+  const last = addDays(parseIso(wks[wks.length - 1]), 6);
+  const tail = first.getFullYear() === last.getFullYear()
+    ? (last.getMonth() + 1) + '月' + last.getDate() + '日'
+    : fmtDateJp(last);
+  return fmtDateJp(first) + '(' + DOW_JP[first.getDay()] + ') 〜 ' + tail + '(' + DOW_JP[last.getDay()] + ')';
 }
 /* ---------- 実績参考（前年同期・前々年同期） ---------- */
 function refWeekIso(wk, yearsBack){
@@ -639,8 +665,7 @@ function renderMonthlyNoteModal(){
     '</div></div>';
 }
 function monthGrandTotal(channel, monthKey){
-  const wks = weekKeysInMonth(channel, monthKey);
-  return wks.reduce(function(s, wk){ return s + weekGrandTotal(channel, wk); }, 0);
+  return rangeGrandTotal(channel, weekKeysInMonth(channel, monthKey));
 }
 function upsertMemoLog(channel, kind, key, text){
   const c = chData(channel);
@@ -808,14 +833,36 @@ function renderGroupOrderView(){
 }
 
 /* ---------- print preview (both channels, week or month, real entered quantities) ---------- */
-function setPrintMode(mode){ NAV.printMode = mode; render(); }
+function setPrintMode(mode){
+  NAV.printMode = mode;
+  if(mode === 'range' && !NAV.printRangeStart) NAV.printRangeStart = NAV.weekStart;
+  render();
+}
+function navPrintRangePrev(){
+  if(!NAV.printRangeStart) NAV.printRangeStart = NAV.weekStart;
+  NAV.printRangeStart = isoDate(addDays(parseIso(NAV.printRangeStart), -7 * NAV.printRangeWeeks));
+  render();
+}
+function navPrintRangeNext(){
+  if(!NAV.printRangeStart) NAV.printRangeStart = NAV.weekStart;
+  NAV.printRangeStart = isoDate(addDays(parseIso(NAV.printRangeStart), 7 * NAV.printRangeWeeks));
+  render();
+}
+function setPrintRangeWeeks(n){
+  n = Math.max(1, Math.min(8, parseInt(n, 10) || 1));
+  NAV.printRangeWeeks = n;
+  render();
+}
 function renderPrintView(channel){
   const mode = NAV.printMode || 'week';
   let out = '<div class="subnav no-print">' +
     '<button class="' + (mode === 'week' ? 'active' : '') + '" onclick="setPrintMode(\'week\')">週次で印刷</button>' +
     '<button class="' + (mode === 'month' ? 'active' : '') + '" onclick="setPrintMode(\'month\')">月次で印刷</button>' +
+    '<button class="' + (mode === 'range' ? 'active' : '') + '" onclick="setPrintMode(\'range\')">週数指定で印刷</button>' +
     '</div>';
-  return out + (mode === 'month' ? renderPrintViewMonth(channel) : renderPrintViewWeek(channel));
+  if(mode === 'month') return out + renderPrintViewMonth(channel);
+  if(mode === 'range') return out + renderPrintViewRange(channel);
+  return out + renderPrintViewWeek(channel);
 }
 function renderPrintViewWeek(channel){
   const wk = NAV.weekStart;
@@ -914,6 +961,68 @@ function renderPrintViewMonth(channel){
         '<table class="print-table"><tbody>';
       items.forEach(function(p){
         out += '<tr><td class="code">' + esc(p.code) + '</td><td>' + esc(p.name) + '</td><td class="qty">' + fmtInt(monthProductTotal('wholesale', mk, p.code)) + '</td></tr>';
+      });
+      out += '</tbody></table></div>';
+    });
+    out += '<div class="print-grand">製造予定合計　<b>' + fmtInt(grand) + '個</b></div>';
+  }
+  out += '</div>';
+  return out;
+}
+function renderPrintViewRange(channel){
+  if(!NAV.printRangeStart) NAV.printRangeStart = NAV.weekStart;
+  const weeksCount = NAV.printRangeWeeks || 2;
+  const wks = rangeWeekKeys(NAV.printRangeStart, weeksCount);
+  const grand = rangeGrandTotal(channel, wks);
+  const weekOptions = [2, 3, 4, 5, 6].map(function(n){
+    return '<option value="' + n + '"' + (n === weeksCount ? ' selected' : '') + '>' + n + '週分</option>';
+  }).join('');
+  let out = '<div class="print-toolbar no-print">' +
+    '<button class="nav-arrow" onclick="navPrintRangePrev()">‹</button>' +
+    '<div class="period-label">' + fmtRangeLabel(wks) + '</div>' +
+    '<button class="nav-arrow" onclick="navPrintRangeNext()">›</button>' +
+    '<select onchange="setPrintRangeWeeks(this.value)">' + weekOptions + '</select>' +
+    '<div class="spacer"></div>' +
+    '<button class="btn primary" onclick="window.print()">🖨 このページを印刷</button>' +
+    '</div>';
+  out += '<div class="range-weeks-note no-print">含まれる週：' +
+    wks.map(function(w){
+      const st = getWeek(channel, w).status;
+      return '<span class="week-chip ' + st + '">' + fmtWeekLabel(parseIso(w)) + (st === 'confirmed' ? ' 確定' : ' 下書き') + '</span>';
+    }).join('') + '</div>';
+  out += '<div class="print-sheet">';
+  out += '<div class="print-head">' +
+    '<div class="print-title">製造予定表　' + (channel === 'retail' ? '通信販売' : '卸販売') + '</div>' +
+    '<div class="print-sub">' + fmtRangeLabel(wks) + '　（' + weeksCount + '週分合計）</div>' +
+    '</div>';
+  if(grand === 0){
+    out += '<div class="empty-note">この期間はまだ製造予定数が入力されていません。週次計画画面で数量を入力すると、ここに合計として反映されます。</div>';
+  } else if(channel === 'retail'){
+    const groups = groupedRetailProducts();
+    groups.forEach(function(g, i){
+      const items = g.products.filter(function(p){ return rangeProductTotal('retail', wks, p.code) > 0; });
+      if(!items.length) return;
+      const subtotal = rangeGroupSubtotal('retail', wks, g.products);
+      out += '<div class="print-group">' +
+        '<div class="print-group-title"><span class="rank">' + pad2(i + 1) + '</span><span class="gname">' + esc(g.name) + '</span><span class="gtotal">小計 <b>' + fmtInt(subtotal) + '個</b></span></div>' +
+        '<table class="print-table"><tbody>';
+      items.forEach(function(p){
+        out += '<tr><td class="code">' + esc(p.code) + '</td><td>' + esc(p.name) + '</td><td class="qty">' + fmtInt(rangeProductTotal('retail', wks, p.code)) + '</td></tr>';
+      });
+      out += '</tbody></table></div>';
+    });
+    out += '<div class="print-grand">製造予定合計　<b>' + fmtInt(grand) + '個</b></div>';
+  } else {
+    const groups = groupedWholesaleProducts();
+    groups.forEach(function(g, i){
+      const items = g.products.filter(function(p){ return rangeProductTotal('wholesale', wks, p.code) > 0; });
+      if(!items.length) return;
+      const subtotal = rangeGroupSubtotal('wholesale', wks, g.products);
+      out += '<div class="print-group">' +
+        '<div class="print-group-title"><span class="rank">' + pad2(i + 1) + '</span><span class="gname">' + esc(g.name) + '</span><span class="gtotal">小計 <b>' + fmtInt(subtotal) + '個</b></span></div>' +
+        '<table class="print-table"><tbody>';
+      items.forEach(function(p){
+        out += '<tr><td class="code">' + esc(p.code) + '</td><td>' + esc(p.name) + '</td><td class="qty">' + fmtInt(rangeProductTotal('wholesale', wks, p.code)) + '</td></tr>';
       });
       out += '</tbody></table></div>';
     });
@@ -1552,6 +1661,9 @@ window.navThisWeek = navThisWeek;
 window.navPrevMonth = navPrevMonth;
 window.navNextMonth = navNextMonth;
 window.setPrintMode = setPrintMode;
+window.navPrintRangePrev = navPrintRangePrev;
+window.navPrintRangeNext = navPrintRangeNext;
+window.setPrintRangeWeeks = setPrintRangeWeeks;
 window.toggleGroupCollapse = toggleGroupCollapse;
 window.onQtyInput = onQtyInput;
 window.moveGroupUp = moveGroupUp;
