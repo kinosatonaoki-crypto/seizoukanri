@@ -22,7 +22,7 @@ const NAV = {
   campaignModalOpen: false,
   monthlyNoteModalOpen: false,
   breakdownProductCode: null, // 「商品内訳設定」画面で選択中の商品コード
-  ocr: { status: 'idle', file: null, previewUrl: null, progressPct: 0, rows: [], errorMsg: '' },
+  ocr: { status: 'idle', file: null, previewUrl: null, progressPct: 0, rows: [], errorMsg: '', dataImportMeta: null },
 };
 
 /* ---------- date helpers ---------- */
@@ -1005,15 +1005,29 @@ function renderWholesaleBreakdownView(){
 function renderOcrView(channel){
   const products = channel === 'retail' ? MASTER.retailProducts : MASTER.wholesaleProducts;
   const o = NAV.ocr;
-  let out = '<div class="known-issue">紙の伝票・注文書などをスマホで撮影して、数量の入力を補助する機能です。読み取り結果はあくまで目安なので、必ずこの画面で内容を確認してから反映してください（印刷された文字向けの機能で、手書きの精度は高くありません）。</div>';
+  let out = '<div class="known-issue">紙の伝票・注文書などをスマホで撮影するか、受注・売上データのExcelファイルを取り込んで、数量の入力を補助する機能です。読み取り結果はあくまで目安なので、必ずこの画面で内容を確認してから反映してください（写真は印刷された文字向けの機能で、手書きの精度は高くありません）。</div>';
+  out += renderDataImportStatusBanner(channel);
 
   if(o.status === 'idle' || o.status === 'error'){
     out += '<div class="ocr-dropzone">' +
       '<div style="margin-bottom:10px;color:var(--muted);font-size:13px;">写真を選ぶか、その場で撮影してください</div>' +
       '<label class="btn primary ocr-pick-btn">写真を選ぶ／撮影する' +
         '<input type="file" accept="image/*" capture="environment" onchange="onOcrFileSelected(this,\'' + channel + '\')"></label>' +
-      (o.status === 'error' ? '<div style="margin-top:10px;color:var(--warn);font-size:12.5px;">' + esc(o.errorMsg || '読み取りに失敗しました。もう一度お試しください。') + '</div>' : '') +
       '</div>';
+    out += '<div class="ocr-dropzone" style="margin-top:14px;">' +
+      '<div style="margin-bottom:10px;color:var(--muted);font-size:13px;">受注・売上データのExcelファイル（.xlsx）を選んでください</div>' +
+      '<label class="btn primary ocr-pick-btn">データファイルを選ぶ' +
+        '<input type="file" accept=".xlsx,.xls" onchange="onDataFileSelected(this,\'' + channel + '\')"></label>' +
+      '<div style="margin-top:8px;color:var(--muted);font-size:11.5px;">「商品コード」と「数量」（卸売は「総数量」）の列があるファイルに対応しています。列名から商品コード・数量・日付の列を自動で検出します。</div>' +
+      '</div>';
+    if(o.status === 'error'){
+      out += '<div style="margin-top:10px;color:var(--warn);font-size:12.5px;">' + esc(o.errorMsg || '読み取りに失敗しました。もう一度お試しください。') + '</div>';
+    }
+    return out;
+  }
+
+  if(o.status === 'dataProcessing'){
+    out += '<div class="ocr-progress">データを読み込んでいます…</div>';
     return out;
   }
 
@@ -1028,17 +1042,28 @@ function renderOcrView(channel){
     out += '<div class="ocr-progress">読み取り中…（' + pct + '%）' +
       '<div class="ocr-progress-bar"><div style="width:' + pct + '%"></div></div></div>';
   } else if(o.status === 'review'){
-    out += '<div style="color:var(--muted);font-size:12.5px;">' + o.rows.length + '行を検出しました。内容を確認し、必要に応じて商品・数量を修正してから反映してください。</div>';
+    if(o.dataImportMeta){
+      const m = o.dataImportMeta;
+      out += '<div style="color:var(--muted);font-size:12.5px;">「' + esc(m.sheetName) + '」シートから' + fmtInt(m.matchedRows) + '行を読み取り、' + o.rows.length + '商品に集計しました' +
+        (m.skippedRows ? '（対象外の行：' + fmtInt(m.skippedRows) + '件）' : '') + '。' +
+        (m.maxDate ? 'このファイルの最新の日付は' + fmtDateJp(parseIso(m.maxDate)) + 'でした。' : '') +
+        '内容を確認し、必要に応じて数量を修正してから反映してください。</div>';
+    } else {
+      out += '<div style="color:var(--muted);font-size:12.5px;">' + o.rows.length + '行を検出しました。内容を確認し、必要に応じて商品・数量を修正してから反映してください。</div>';
+    }
   }
   out += '</div></div>';
 
   if(o.status === 'review'){
     if(!o.rows.length){
-      out += '<div class="empty-note">数量らしき行を検出できませんでした。写真の向き・明るさを変えて撮り直すか、週次計画画面で直接入力してください。</div>' +
+      out += '<div class="empty-note">' +
+        (o.dataImportMeta ? '対象商品に該当するデータを検出できませんでした。ファイルの形式をご確認ください。' : '数量らしき行を検出できませんでした。写真の向き・明るさを変えて撮り直すか、週次計画画面で直接入力してください。') +
+        '</div>' +
         '<div class="go-bottom"><button class="btn ghost" onclick="resetOcr()">やり直す</button></div>';
     } else {
       out += '<div class="ocr-list">';
       o.rows.forEach(function(row, i){
+        const rawHtml = o.dataImportMeta ? esc(row.rawLine) : ('検出テキスト:「' + esc(row.rawLine) + '」');
         out += '<div class="ocr-row">' +
           '<input type="checkbox" ' + (row.include ? 'checked' : '') + ' onchange="toggleOcrRowInclude(' + i + ')">' +
           '<select onchange="updateOcrRowField(' + i + ',\'matchedCode\',this.value,\'' + channel + '\')">' +
@@ -1049,7 +1074,7 @@ function renderOcrView(channel){
           '</select>' +
           '<input type="number" min="0" inputmode="numeric" value="' + (row.qty === null ? '' : row.qty) + '" placeholder="数量" ' +
             'oninput="updateOcrRowField(' + i + ',\'qty\',this.value,\'' + channel + '\')">' +
-          '<span class="raw">検出テキスト:「' + esc(row.rawLine) + '」' + (!row.matchedCode ? '<span class="unmatched"> ・候補なし</span>' : '') + '</span>' +
+          '<span class="raw">' + rawHtml + (!row.matchedCode ? '<span class="unmatched"> ・候補なし</span>' : '') + '</span>' +
           '</div>';
       });
       out += '</div>';
@@ -1062,6 +1087,134 @@ function renderOcrView(channel){
   }
   return out;
 }
+function ensureDataImportStatus(channel){
+  if(!STATE[channel].dataImportStatus){
+    STATE[channel].dataImportStatus = { throughDate: null, importedAt: null, matchedRows: 0, skippedRows: 0 };
+  }
+  return STATE[channel].dataImportStatus;
+}
+function renderDataImportStatusBanner(channel){
+  const st = STATE[channel].dataImportStatus;
+  if(!st || !st.throughDate) return '';
+  const d = parseIso(st.throughDate);
+  const importedAtLabel = st.importedAt ? new Date(st.importedAt).toLocaleString('ja-JP') : '';
+  return '<div class="data-import-status no-print">📅 現在、<b>' + fmtDateJp(d) + '</b>分のデータまで取り込み済みです' +
+    (importedAtLabel ? '（' + esc(importedAtLabel) + ' 反映・' + fmtInt(st.matchedRows) + '件）' : '') + '</div>';
+}
+/* ---------- データ取込（Excelファイルからの商品コード×数量の集計） ---------- */
+// ヘッダー名から「商品コード」「数量（卸売は総数量優先）」「日付」の列を自動検出する。
+// 通販の「受注データ」・卸売の「売上データ」いずれの実データ列構成にも対応できるよう、
+// 列位置を固定せずヘッダー文字列でマッチングする（build_sales_history.py系の固定列番号方式とは別）。
+function findHeaderCol(headers, exactNames, fallbackIncludes){
+  for(let i = 0; i < exactNames.length; i++){
+    const idx = headers.indexOf(exactNames[i]);
+    if(idx !== -1) return idx;
+  }
+  if(fallbackIncludes){
+    const idx = headers.findIndex(function(h){ return h.indexOf(fallbackIncludes) !== -1; });
+    if(idx !== -1) return idx;
+  }
+  return -1;
+}
+function parseDataImportRows(headerRow, dataRows, products){
+  const headers = (headerRow || []).map(function(h){ return h == null ? '' : String(h).trim(); });
+  const codeCol = findHeaderCol(headers, ['商品コード', '商品CD', '品番'], '商品コード');
+  const qtyCol = findHeaderCol(headers, ['総数量', '数量'], '数量');
+  const dateCol = findHeaderCol(headers, ['受注日', '出荷日', '売上日', '売上計上日', '伝票日付'], '日');
+  if(codeCol === -1 || qtyCol === -1){
+    return { error: '「商品コード」「数量」の列が見つかりませんでした。ファイルの形式をご確認ください。' };
+  }
+  const productByCode = {};
+  products.forEach(function(p){ productByCode[p.code] = p; });
+  const agg = {};
+  const rowCounts = {};
+  let maxDate = null;
+  let matchedRows = 0;
+  let skippedRows = 0;
+  (dataRows || []).forEach(function(row){
+    const codeRaw = row[codeCol];
+    const qtyRaw = row[qtyCol];
+    if(codeRaw === null || codeRaw === undefined || codeRaw === '' || qtyRaw === null || qtyRaw === undefined || qtyRaw === ''){
+      return;
+    }
+    const code = String(codeRaw).trim();
+    const qty = Number(qtyRaw);
+    if(!productByCode[code] || !isFinite(qty)){
+      skippedRows++;
+      return;
+    }
+    agg[code] = (agg[code] || 0) + qty;
+    rowCounts[code] = (rowCounts[code] || 0) + 1;
+    matchedRows++;
+    if(dateCol !== -1){
+      const raw = row[dateCol];
+      const d = (raw instanceof Date) ? raw : (raw ? new Date(raw) : null);
+      if(d && !isNaN(d.getTime()) && (!maxDate || d > maxDate)) maxDate = d;
+    }
+  });
+  const rows = Object.keys(agg).map(function(code){
+    const p = productByCode[code];
+    return {
+      rawLine: '元データより合計（' + fmtInt(rowCounts[code]) + '件）',
+      matchedCode: code,
+      matchedName: p.name,
+      qty: Math.round(agg[code]),
+      include: true,
+    };
+  });
+  return { rows: rows, maxDate: maxDate, matchedRows: matchedRows, skippedRows: skippedRows };
+}
+function onDataFileSelected(input, channel){
+  const file = input.files && input.files[0];
+  if(!file) return;
+  NAV.ocr.status = 'dataProcessing';
+  NAV.ocr.errorMsg = '';
+  render();
+  const reader = new FileReader();
+  reader.onload = function(e){
+    try{
+      if(typeof XLSX === 'undefined'){
+        throw new Error('データ読み込みライブラリの読み込みに失敗しました（通信環境をご確認のうえ、もう一度お試しください）');
+      }
+      const data = new Uint8Array(e.target.result);
+      const wb = XLSX.read(data, { type: 'array', cellDates: true });
+      const preferredSheets = ['受注データ', '売上データ'];
+      const sheetName = preferredSheets.filter(function(n){ return wb.SheetNames.indexOf(n) !== -1; })[0] || wb.SheetNames[0];
+      const sheet = wb.Sheets[sheetName];
+      const rows2d = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null });
+      if(!rows2d || !rows2d.length){
+        throw new Error('データが見つかりませんでした。ファイルの形式をご確認ください。');
+      }
+      const products = channel === 'retail' ? MASTER.retailProducts : MASTER.wholesaleProducts;
+      const result = parseDataImportRows(rows2d[0], rows2d.slice(1), products);
+      if(result.error){
+        NAV.ocr.status = 'error';
+        NAV.ocr.errorMsg = result.error;
+        render();
+        return;
+      }
+      NAV.ocr.rows = result.rows;
+      NAV.ocr.dataImportMeta = {
+        maxDate: result.maxDate ? isoDate(result.maxDate) : null,
+        matchedRows: result.matchedRows,
+        skippedRows: result.skippedRows,
+        sheetName: sheetName,
+      };
+      NAV.ocr.status = 'review';
+      render();
+    } catch(err){
+      NAV.ocr.status = 'error';
+      NAV.ocr.errorMsg = (err && err.message) || 'データの読み込みに失敗しました。もう一度お試しください。';
+      render();
+    }
+  };
+  reader.onerror = function(){
+    NAV.ocr.status = 'error';
+    NAV.ocr.errorMsg = 'ファイルの読み込みに失敗しました。もう一度お試しください。';
+    render();
+  };
+  reader.readAsArrayBuffer(file);
+}
 function onOcrFileSelected(input, channel){
   const file = input.files && input.files[0];
   if(!file) return;
@@ -1071,11 +1224,12 @@ function onOcrFileSelected(input, channel){
   NAV.ocr.status = 'preview';
   NAV.ocr.rows = [];
   NAV.ocr.errorMsg = '';
+  NAV.ocr.dataImportMeta = null;
   render();
 }
 function resetOcr(){
   if(NAV.ocr.previewUrl) URL.revokeObjectURL(NAV.ocr.previewUrl);
-  NAV.ocr = { status: 'idle', file: null, previewUrl: null, progressPct: 0, rows: [], errorMsg: '' };
+  NAV.ocr = { status: 'idle', file: null, previewUrl: null, progressPct: 0, rows: [], errorMsg: '', dataImportMeta: null };
   render();
 }
 async function startOcrRecognition(channel){
@@ -1134,6 +1288,7 @@ function updateOcrRowField(i, field, value, channel){
 function applyOcrRows(channel){
   const wk = NAV.weekStart;
   const week = ensureWeek(channel, wk);
+  const dataImportMeta = NAV.ocr.dataImportMeta;
   let count = 0;
   NAV.ocr.rows.forEach(function(row){
     if(row.include && row.matchedCode && row.qty !== null && row.qty !== undefined){
@@ -1141,13 +1296,23 @@ function applyOcrRows(channel){
       count++;
     }
   });
-  if(count > 0) dirty = true;
+  if(count > 0){
+    dirty = true;
+    if(dataImportMeta){
+      const st = ensureDataImportStatus(channel);
+      if(dataImportMeta.maxDate) st.throughDate = dataImportMeta.maxDate;
+      st.importedAt = new Date().toISOString();
+      st.matchedRows = dataImportMeta.matchedRows;
+      st.skippedRows = dataImportMeta.skippedRows;
+    }
+  }
   if(NAV.ocr.previewUrl) URL.revokeObjectURL(NAV.ocr.previewUrl);
-  NAV.ocr = { status: 'idle', file: null, previewUrl: null, progressPct: 0, rows: [], errorMsg: '' };
+  NAV.ocr = { status: 'idle', file: null, previewUrl: null, progressPct: 0, rows: [], errorMsg: '', dataImportMeta: null };
   NAV.view = 'weekly';
   render();
+  const dateNote = (dataImportMeta && dataImportMeta.maxDate) ? '' : (dataImportMeta ? '（この取込データからは日付を検出できなかったため、取込済み日の表示は更新されていません）' : '');
   showToast(count > 0
-    ? '✓ ' + count + '件を今週の入力欄に反映しました。内容を確認して保存してください。'
+    ? '✓ ' + count + '件を今週の入力欄に反映しました' + dateNote + '。内容を確認して保存してください。'
     : '反映する行がありませんでした。チェック・商品・数量を確認してください。');
 }
 
@@ -1566,6 +1731,7 @@ window.openMemoHistory = openMemoHistory;
 window.closeMemoHistory = closeMemoHistory;
 window.onMemoFilterInput = onMemoFilterInput;
 window.onOcrFileSelected = onOcrFileSelected;
+window.onDataFileSelected = onDataFileSelected;
 window.resetOcr = resetOcr;
 window.startOcrRecognition = startOcrRecognition;
 window.toggleOcrRowInclude = toggleOcrRowInclude;

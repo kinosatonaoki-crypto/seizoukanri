@@ -178,6 +178,7 @@ input[type=number]{font-family:inherit;font-size:14px;}
 .ocr-dropzone input[type=file]{display:none;}
 .ocr-preview-wrap{display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;margin-bottom:14px;}
 .ocr-preview-wrap img{max-width:260px;max-height:340px;border-radius:8px;border:1px solid var(--rule);object-fit:contain;}
+.data-import-status{background:var(--good-bg);color:var(--good);border-radius:10px;padding:10px 14px;font-size:12.5px;margin-bottom:14px;}
 .ocr-progress{font-size:13px;color:var(--muted);}
 .ocr-progress-bar{height:6px;background:var(--rule);border-radius:999px;overflow:hidden;margin-top:6px;width:220px;}
 .ocr-progress-bar>div{height:100%;background:var(--accent);transition:width .2s;}

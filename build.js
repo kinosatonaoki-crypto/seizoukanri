@@ -15,8 +15,8 @@ const cssInject = "\nconst CSS_TEXT = `" + css.replace(/\\/g, '\\\\') + "`;\n" +
 const logic = logicTemplate.slice(0, idx + CSS_MARKER.length) + cssInject + logicTemplate.slice(idx + CSS_MARKER.length);
 
 const initialState = {
-  retail: { groupOrder: master.groupOrder.slice(), weeks: {}, months: {}, memoLog: [], campaigns: {} },
-  wholesale: { groupOrder: (master.wholesaleGroupOrder || []).slice(), weeks: {}, months: {}, memoLog: [], monthlyNotes: {}, productBreakdowns: {} },
+  retail: { groupOrder: master.groupOrder.slice(), weeks: {}, months: {}, memoLog: [], campaigns: {}, dataImportStatus: null },
+  wholesale: { groupOrder: (master.wholesaleGroupOrder || []).slice(), weeks: {}, months: {}, memoLog: [], monthlyNotes: {}, productBreakdowns: {}, dataImportStatus: null },
 };
 
 function escLt(s){ return s.replace(/</g, '\\u003c'); }
@@ -30,6 +30,7 @@ const html = '<!doctype html>\n<html lang="ja">\n<head>\n<meta charset="utf-8">\
   '<script id="app-master" type="application/json">' + masterJson + '<' + '/script>\n' +
   '<script id="app-state" type="application/json">' + stateJson + '<' + '/script>\n' +
   '<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"><' + '/script>\n' +
+  '<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"><' + '/script>\n' +
   '<script>' + logic + '<' + '/script>\n' +
   '</body>\n</html>';
 
